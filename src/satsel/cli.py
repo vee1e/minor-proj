@@ -121,10 +121,15 @@ def _cmd_train_gnn(args) -> int:
 
 
 def _cmd_evaluate(args) -> int:
+    import os
+
     from satsel.eval import evaluate, report
 
+    if args.no_gnn:
+        os.environ["SATEL_SKIP_GNN"] = "1"
     cfg = load_config()
-    results = evaluate.run_evaluation(cfg, selector_kind=args.selector)
+    results = evaluate.run_evaluation(cfg, selector_kind=args.selector,
+                                      include_gnn=not args.no_gnn)
     ood = evaluate.run_ood(cfg)
     rob = evaluate.run_robustness(cfg)
     path = report.write_report(cfg, results, ood, rob)
@@ -195,6 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("evaluate", help="run the pre-registered evaluation")
     p.add_argument("--selector", choices=["auto", "classical", "gnn"], default="auto")
+    p.add_argument("--no-gnn", action="store_true",
+                   help="skip loading the GNN (use the classical selector only)")
     p.set_defaults(func=_cmd_evaluate)
 
     p = sub.add_parser("oracle", help="run the SolverOracle on a CNF file")

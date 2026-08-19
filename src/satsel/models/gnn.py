@@ -7,11 +7,20 @@ larger than the node cap are routed to the classical path at inference time.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
 
 from satsel.models.classical import SOLVERS
+
+
+def _torch():
+    os.environ.setdefault("OMP_NUM_THREADS", "1")
+    import torch
+
+    torch.set_num_threads(1)
+    return torch
 
 
 def _load_cnf(row) -> object:
@@ -27,7 +36,7 @@ def cnf_to_graph(cnf, nvars: int, node_feats=None):
     """Return (x, edge_index, edge_attr) for the variable-clause bipartite
     graph. Variables are nodes 0..nvars-1; clauses are nodes
     nvars..nvars+nclauses-1."""
-    import torch
+    torch = _torch()
 
     clauses = cnf.clauses
     nclauses = cnf.nclauses
@@ -71,7 +80,7 @@ def cnf_to_graph(cnf, nvars: int, node_feats=None):
 
 
 def _gnn_model(in_dim: int, n_layers: int, n_out: int, hidden: int = 64):
-    import torch
+    torch = _torch()
     import torch.nn as nn
     import torch_geometric.nn as gnn
 
@@ -155,7 +164,7 @@ def _minibatches(train, cap: int, batch_size: int = 32):
 
 
 def train_gnn(dataset, cfg: dict, seed: int, epochs: int = 40) -> dict:
-    import torch
+    torch = _torch()
 
     cap = int(cfg.get("gnn_node_cap", 500000))
     train = dataset[(dataset["split"] == "train") & dataset["vbs_solved"] &
@@ -215,7 +224,7 @@ def train_gnn(dataset, cfg: dict, seed: int, epochs: int = 40) -> dict:
 
 
 def _expected_cost_loss(p, batch_rows) -> object:
-    import torch
+    torch = _torch()
 
     wb = [[row[f"{s}_weight"] for s in SOLVERS] for row in batch_rows]
     wt = torch.tensor(wb, dtype=torch.float)
@@ -223,7 +232,7 @@ def _expected_cost_loss(p, batch_rows) -> object:
 
 
 def _val_par2(model, val, in_dim: int, cap: float) -> float:
-    import torch
+    torch = _torch()
 
     if val.empty:
         return float("inf")
@@ -245,7 +254,7 @@ def _val_par2(model, val, in_dim: int, cap: float) -> float:
 
 
 def predict_gnn(model_state: dict, cnf, nvars: int, solver_list) -> tuple[str, float]:
-    import torch
+    torch = _torch()
 
     in_dim = int(model_state.get("in_dim", 4))
     n_layers = int(model_state.get("n_layers", 2))

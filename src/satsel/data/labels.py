@@ -32,7 +32,11 @@ def _load_manifest(cfg: dict) -> pd.DataFrame:
 
 
 def derive_labels(cfg: dict) -> pd.DataFrame:
-    """Return a wide per-formula label DataFrame (index = formula_id)."""
+    """Return a wide per-formula label DataFrame (index = formula_id).
+
+    Only formulas that actually appear in the profiling DB are labelled, so a
+    partially-profiled corpus builds a valid dataset from what exists.
+    """
     manifest = _load_manifest(cfg)
     db_path = Path(cfg["paths"]["db"])
     if not db_path.exists():
@@ -45,6 +49,11 @@ def derive_labels(cfg: dict) -> pd.DataFrame:
     conn.close()
     if runs.empty:
         raise ValueError("profiling db is empty; nothing to label")
+
+    profiled_ids = set(runs["formula_id"])
+    manifest = manifest[manifest["formula_id"].isin(profiled_ids)]
+    if manifest.empty:
+        raise ValueError("no manifest formulas appear in the profiling DB")
 
     cost_clip = float(cfg.get("cost_clip", 10))
     tie_margin = float(cfg.get("tie_margin", 1.2))

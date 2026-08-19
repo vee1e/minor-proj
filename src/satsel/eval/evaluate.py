@@ -19,6 +19,8 @@ from satsel.models.classical import SOLVERS
 
 
 def _load_models(cfg: dict) -> dict:
+    import os
+
     mdir = Path(cfg["paths"]["models"])
     out: dict = {}
     if (mdir / "portfolio.json").exists():
@@ -30,10 +32,12 @@ def _load_models(cfg: dict) -> dict:
     if (mdir / "satzilla.joblib").exists():
         out["satzilla"] = joblib.load(mdir / "satzilla.joblib")
     gnn_path = mdir / "gnn.pt"
-    if gnn_path.exists():
+    if gnn_path.exists() and not os.environ.get("SATEL_SKIP_GNN"):
         try:
+            os.environ.setdefault("OMP_NUM_THREADS", "1")
             import torch
 
+            torch.set_num_threads(1)
             out["gnn"] = torch.load(gnn_path, map_location="cpu", weights_only=False)
         except Exception:  # noqa: BLE001
             out["gnn"] = None
@@ -249,7 +253,7 @@ def _frac_bootstrap(diffs: np.ndarray, family: np.ndarray, seed: int,
     return count / 500.0
 
 
-def run_evaluation(cfg: dict, selector_kind: str = "auto") -> dict:
+def run_evaluation(cfg: dict, selector_kind: str = "auto", include_gnn: bool = True) -> dict:
     dataset = load_dataset(cfg)
     models = _load_models(cfg)
     test = dataset[dataset["split"] == "test"].copy()
@@ -260,12 +264,12 @@ def run_evaluation(cfg: dict, selector_kind: str = "auto") -> dict:
     theta_info = models.get("theta", {})
     chosen = selector_kind
     if chosen == "auto":
-        chosen = "gnn" if models.get("gnn") is not None else "classical"
+        chosen = "gnn" if (include_gnn and models.get("gnn") is not None) else "classical"
 
     systems = ["best_average", "fallback", "majority", "selector", "classical"]
     if models.get("satzilla") is not None:
         systems.append("satzilla")
-    if models.get("gnn") is not None:
+    if include_gnn and models.get("gnn") is not None:
         systems.append("gnn")
     systems.append("vbs")
 

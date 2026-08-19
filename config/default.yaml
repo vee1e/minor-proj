@@ -1,0 +1,96 @@
+# FROZEN scope guardrails — ML-Driven SAT Solver Selection (minor-proj)
+# Freeze AFTER the pilot profile (§7.5 of DEVELOPMENT_PLAN.md). Post-freeze edits are
+# documented deviations (see EVAL_PROTOCOL.md §9).
+
+schema_version: "1.0"
+feature_schema_version: "1.0"
+
+# ---- Timeouts (seconds) ----
+tau_screen: 30        # screening run budget (P1)
+tau_pres: 5           # Kissat presolve budget (P0)
+max_timeout: 300      # oracle hard cap
+feat_budget_frac: 0.05
+feat_budget_floor_s: 0.20     # tau_feat = max(feat_budget_frac*mean, this)
+runs_per_pair: 3      # median-of-solved label
+
+# Per-family timeout tiers (PAR-2 computed within tier only)
+tau_tiers:
+  random3sat: 60
+  random3sat_large: 60
+  colouring: 120
+  planning: 120
+  scheduling: 180
+  industrial: 300
+  crypto: 300
+  ood_scheduling: 300
+
+# ---- Portfolio (candidates; pruning writes artifacts/portfolio.json) ----
+portfolio:
+  - minisat22
+  - glucose4
+  - cadical153
+  - maplesat
+  - lingeling
+  - maplecm
+  - kissat404
+prune_min_unique_share: 0.03   # 3% strictly-best share to survive pruning
+tie_margin: 1.2               # T_2nd <= 1.2*T_1st  -> tie_flag
+tie_floor_ms: 50              # T_1st < 50ms -> tie_flag
+
+# ---- GNN scope ----
+gnn_node_cap: 500000          # n + m <= cap, else route to classical path
+gnn_layer_ablation: [1, 2, 4]
+use_positional_encodings: true
+
+# ---- Cost weighting ----
+cost_clip: 10                 # w = clamp(T(i,s)/T(i,s*), 1, 10)
+batch_normalize_weights: true
+
+# ---- Evaluation (pre-registered in EVAL_PROTOCOL.md) ----
+bootstrap_resamples: 10000
+bootstrap_stratify_by: family
+wilcoxon_pairs_only: both_solved   # no censoring ties
+solve_rate_test: mcnemar
+multi_comp_adjust: holm_bonferroni
+alpha: 0.05
+n_seeds_per_system: 5
+random_baseline_draws: 10
+random_baseline_seed_paired: true
+theta_grid: [0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99]   # swept on validation; curve reported
+
+# ---- Data ----
+min_families: 6
+target_id_instances: 2000
+target_ood_instances: 200
+ood_family_primary: scheduling     # generated scheduling
+lofo_metric: par2_mean
+min_vbs_solve_rate_per_family: 0.70   # top-up families below this
+download_https_only: true
+verify_checksums: true
+
+# ---- Seeds ----
+seeds:
+  split: 42
+  random_baseline: 2026
+  generators: 2026
+  model_train: [100, 200, 300, 400, 500]   # 5 seeds
+
+# ---- Paths (relative to repo root; artifacts/ is gitignored) ----
+paths:
+  raw: artifacts/raw
+  features: artifacts/features
+  runs: artifacts/runs
+  datasets: artifacts/datasets
+  models: artifacts/models
+  reports: artifacts/reports
+  manifests: artifacts/manifests
+  db: artifacts/runs/profiling.db
+
+# ---- SolverOracle resource caps ----
+oracle:
+  max_bytes: 536870912        # 512 MB
+  max_vars: 2000000
+  max_clauses: 10000000
+  max_literals: 20000000
+  budget_overhead_s: 30
+  return_model_default: false

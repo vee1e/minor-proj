@@ -1,0 +1,67 @@
+@import "tw-animate-css";
+@import "@fontsource/iosevka";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --sans: 'Iosevka', 'Iosevka Term', 'Iosevka Nerd Font', ui-monospace, monospace;
+  --mono: 'Iosevka', 'Iosevka Term', 'Iosevka Nerd Font', ui-monospace, monospace;
+
+  font-family: var(--sans);
+  color-scheme: dark;
+
+  --background: 235 19% 13%; /* #1a1b26 */
+  --foreground: 228 39% 75%; /* #a9b1d6 */
+  --card: 240 15% 10%; /* #16161e */
+  --card-foreground: 228 39% 75%;
+  --popover: 240 15% 9%; /* #15161e */
+  --popover-foreground: 228 39% 75%;
+  --primary: 221 89% 72%; /* #7aa2f7 */
+  --primary-foreground: 235 19% 13%;
+  --secondary: 230 23% 20%; /* #292e42 */
+  --secondary-foreground: 228 39% 75%;
+  --muted: 230 23% 20%;
+  --muted-foreground: 231 23% 44%; /* #565f89 */
+  --accent: 232 23% 28%; /* #3b4261 */
+  --accent-foreground: 228 39% 75%;
+  --destructive: 349 89% 72%; /* #f7768e */
+  --destructive-foreground: 235 19% 13%;
+  --border: 230 23% 20%; /* #292e42 */
+  --input: 230 23% 20%;
+  --ring: 221 89% 72%;
+  --radius: 0.375rem;
+}
+
+html, body, #root {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  background-color: #1a1b26;
+  color: #a9b1d6;
+  font-family: 'Iosevka', 'Iosevka Term', 'Iosevka Nerd Font', monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+  border-color: #292e42;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: #16161e;
+}
+::-webkit-scrollbar-thumb {
+  background: #292e42;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3b4261;
+}

@@ -213,7 +213,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-gnn", action="store_true")
     p.add_argument("--small", action="store_true")
     p.set_defaults(func=_cmd_all)
+
+    p = sub.add_parser("web", help="start the Flask web interface")
+    p.add_argument("--port", type=int, default=5001)
+    p.add_argument("--host", type=str, default="127.0.0.1")
+    p.set_defaults(func=_cmd_web)
     return ap
+
+
+def _cmd_web(args) -> int:
+    from satsel.web_server import main as web_main
+    sys.argv = [sys.argv[0]]
+    if args.port:
+        sys.argv += ["--port", str(args.port)]
+    if args.host:
+        sys.argv += ["--host", args.host]
+    web_main()
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

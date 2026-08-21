@@ -303,6 +303,19 @@ SATSEL_DEVICE=cpu  uv run satsel train-gnn --epochs 40    # force CPU</pre></div
       chose on validation, and a warning if it collapsed onto one solver. Check
       <code>artifacts/models/model_diagnostics.json</code> for the classical side — the
       <code>collapsed</code> flag is the one to look at.</p>
+
+      <div class="note"><span class="lbl">The feature-free comparison runs automatically</span>
+      <p><code>train-gnn</code> trains the model twice: once with the designed node features,
+      once with every node feature replaced by a constant so the network has nothing but graph
+      topology. Same splits, same seeds, same architecture — so the gap between them is
+      attributable to the features alone. That is objective O6, and it lands in
+      <code>results.json</code> under <code>gnn_feature_free</code> and section 8b of the
+      report.</p>
+      <p>Reading it: a positive difference means the designed features earn their place; near
+      zero means topology alone carries the signal; negative means the feature-free model is
+      better, which is a legitimate finding worth reporting as one. Training time doubles —
+      set <code>gnn_node_feats_ablation</code> to a single mode once you no longer need the
+      comparison.</p></div>
     </section>
 
     <section id="s8">
@@ -359,13 +372,25 @@ uv run satsel web                        # dashboard at http://127.0.0.1:5001</p
       <div class="head"><h2>Still open in the code</h2></div>
       <p>Known gaps against the synopsis, none of which block the run above:</p>
       <ul>
-        <li>The <strong>feature-free upper bound</strong> (Zhang et al. 2026) that O6 compares against is not implemented.</li>
-        <li><strong>SATfeatPy is not used</strong> — features are hand-rolled, 63 of them, against the stated “SATfeatPy, d ≤ 120”.</li>
-        <li><strong>Feature-probe overhead</strong> is ~0.46&nbsp;s per instance of Python subprocess start-up, which breaks the 5% τ<sub>feat</sub> budget on easy instances.</li>
-        <li><strong>Repeat runs are not seed-varied</strong> — pysat rejects the <code>seed</code> kwarg, so the three runs capture timing noise only. Fine for median labels; say so in the methodology.</li>
-        <li><strong>Kissat crashes in-process</strong> on some pysat builds. It is profiled in an isolated subprocess and pruned as dominated.</li>
-        <li>The corpus is roughly <strong>half generated</strong>. Reported honestly, but raise the SATLIB share if C1 is to claim a benchmark collection outright.</li>
+        <li><strong>SATfeatPy is not used</strong> &mdash; features are hand-rolled, 70 of them,
+        against the stated &ldquo;SATfeatPy, d &le; 120&rdquo;. It is not on PyPI, only GitHub.
+        Either vendor the repo or reword to &ldquo;a SATfeatPy-derived feature set&rdquo;. A
+        wording decision, not work.</li>
+        <li><strong>Repeat runs are not seed-varied</strong> &mdash; pysat rejects the
+        <code>seed</code> kwarg, so the three runs capture timing noise only. Fine for median
+        labels; say so in the methodology.</li>
+        <li><strong>Kissat crashes in-process</strong> on some pysat builds. It is profiled in an
+        isolated subprocess and pruned as dominated. It also cannot be interrupted, so it can
+        never be the probe solver.</li>
+        <li>The corpus is roughly <strong>a third real</strong> at pilot size, because SATLIB
+        covers three of the eight families. Raising the counts for those three pulls in more real
+        data, at the cost of changing the study&rsquo;s family balance.</li>
       </ul>
+      <p>Two items that were on this list are now closed: the <strong>feature-free comparison</strong>
+      (O6) is produced automatically by <code>train-gnn</code>, and <strong>feature extraction now
+      fits inside its budget</strong> &mdash; the probe runs in-process rather than spawning a
+      Python interpreter per formula, cutting extraction from ~460&nbsp;ms to ~156&nbsp;ms and
+      adding the solver&rsquo;s own search-space counters as features.</p>
     </section>
 
     <footer>

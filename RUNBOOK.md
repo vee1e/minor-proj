@@ -183,10 +183,48 @@ study, which is a design decision worth making deliberately.
 ### 3.2 features: turn formulas into numbers
 
 ```
-uv run satsel features --workers 11
+uv run satsel features --workers 8
+uv run satsel features --no-probe     # skip the probe group entirely
 ```
 
-Each formula becomes a fixed vector of 63 numbers: clause lengths, variable occurrences, graph statistics, and a short solver probe. Extraction respects a time budget; if a group would exceed it, those features are marked missing.
+Each formula becomes 70 numbers, in three groups computed cheapest-first so a
+hard time budget can be enforced:
+
+| group | what it measures | cost |
+| --- | --- | --- |
+| syntactic | counts, ratios, clause-length statistics | ~2 ms |
+| graph | degree distributions, clustering, components | ~5 ms |
+| probe | a short DPLL run and the solver's own counters | up to the budget |
+
+The budget is `tau_feat = max(5% of mean solver runtime, 0.20 s)`. At the
+default 0.2 s a full extraction costs about 156 ms.
+
+**The probe runs in-process**, stopped by the solver's own `interrupt()`. It
+previously wrote a temp file and spawned a Python subprocess, costing ~0.45 s
+per instance — more than the budget it was supposed to fit inside, and on easy
+formulas several hundred times the solve time it was measuring.
+
+Only some pysat backends can be interrupted. CaDiCaL and Lingeling raise
+`NotImplementedError`; a CaDiCaL probe given 0.15 s ran for 5.8 s because
+nothing could stop it. The probe solver must therefore come from
+`core.solvers.INTERRUPTIBLE_SOLVERS`, and MiniSat is the default.
+
+Running in-process also makes the solver's counters available, which is where
+the search-space features come from: conflicts, decisions, propagations and
+restarts (log-compressed), plus scale-free ratios like
+propagations-per-decision and decisions-per-variable.
+
+Two honest caveats:
+
+- **Groups are atomic.** The budget decides whether a group is *entered*, since
+  a half-computed group yields nothing usable. Entry uses a size-based cost
+  estimate rather than "is there time left".
+- **`interrupt()` is cooperative.** It sets a flag the solver checks
+  periodically, so stopping takes ~15 ms. The probe gets a margin and only a
+  fraction of the remaining time, which keeps the total inside the budget.
+
+If a group is skipped, its features are written as 0.0 and flagged missing
+rather than dropped, so the schema stays fixed at 70 columns.
 
 ### 3.3 profile: time every solver (the slow part)
 
@@ -224,9 +262,39 @@ Trains Random Forest, XGBoost, and SVM classifiers with cost-weighted training (
 
 ```
 uv run satsel train-gnn --epochs 40
+SATSEL_DEVICE=cuda uv run satsel train-gnn --epochs 40    # force GPU
+SATSEL_DEVICE=cpu  uv run satsel train-gnn --epochs 40    # force CPU
 ```
 
-Trains the graph neural network. It reads each formula as a bipartite graph of variables and clauses and trains with an expected-cost loss. Formulas larger than a size cap are routed to the classical path at prediction time.
+On Windows PowerShell set the variable with `$env:SATSEL_DEVICE="cuda"`.
+
+The model is the GraSS tripartite heterogeneous GNN: `var`, `lit` and `clause`
+node types over four relations, with sinusoidal positional encodings on clause
+nodes and a runtime-sensitive expected-cost loss. Giving each literal its own
+node is what preserves polarity — an earlier version indexed edges by
+`abs(lit)`, so `(x OR y)` and `(NOT x OR NOT y)` were indistinguishable to it.
+
+**The feature-free comparison (objective O6).** Training runs the whole thing
+twice: once with the designed per-node-type features, and once with every node
+feature replaced by a constant, leaving only topology and message passing.
+Identical splits, seeds and architecture, so the difference is attributable to
+the node features alone — which is the feature-engineering-bottleneck question
+Zhang et al. (2026) raise, measured here rather than cited.
+
+Results land in `results.json` under `gnn_feature_free` and in section 8b of
+`report.md`:
+
+- **positive difference** — the designed features are earning their place
+- **near zero** — topology alone carries the signal, and the hand-designed
+  node features are decoration
+- **negative** — the feature-free model is better; say so in the write-up
+
+Configure with `gnn_node_feats_ablation` in `config/default.yaml`
+(`full`, `structural`, `none`). Set it to a single mode to halve training time
+once you no longer need the comparison.
+
+Training also reports a per-layer ablation, the histogram of solvers chosen on
+validation, and an explicit warning if the model collapsed onto one solver.
 
 ### 3.7 evaluate: the pre-registered statistics
 

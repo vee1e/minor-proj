@@ -6,14 +6,48 @@ Full spec: `DEVELOPMENT_PLAN.md`. Pre-registered evaluation: `EVAL_PROTOCOL.md`.
 
 ## Install
 
-Python 3.11 pinned. Uses `uv`:
+**On a new machine, run the bootstrap script.** It is the supported path and
+handles the things that silently break a fresh checkout:
 
 ```
-uv sync                      # base: solvers + classical ML
-uv sync --extra gnn          # adds PyTorch + PyTorch Geometric (optional, heavy)
+python scripts/bootstrap.py              # solvers + classical ML + dev tools
+python scripts/bootstrap.py --gnn        # ... plus PyTorch (CPU build)
+python scripts/bootstrap.py --gnn --cuda # ... plus PyTorch built for CUDA
+python scripts/bootstrap.py --check      # verify an existing setup, install nothing
 ```
 
-This installs `python-sat == 1.9.dev15`, which ships MiniSat22, Glucose4, CaDiCaL, Maplesat, Lingeling, MapleCM, and Kissat404 in one wheel. No system installs.
+It finds or installs `uv`, fetches the pinned Python 3.11 (see
+`.python-version`), syncs the lockfile, and then *verifies* that every
+dependency imports. `--check` exits non-zero when something is missing, so it
+works as a pre-flight gate before a long run.
+
+Four failure modes it exists to prevent, all of which have bitten us:
+
+- `uv` installs somewhere off PATH (on Windows,
+  `%APPDATA%\Python\Python3xx\Scripts`) and appears "not installed".
+- The system Python is newer than 3.11 and `uv sync` picks the wrong one.
+- **On Windows, `pip install torch` from PyPI silently gives a CPU-only
+  build.** Training then runs on the CPU with no warning. Use `--cuda`.
+- A CUDA build too old for the GPU installs cleanly and only fails at runtime
+  with "no kernel image is available". `--check` reports the GPU's compute
+  capability against the kernels the installed torch actually carries.
+
+If you prefer to drive `uv` directly:
+
+```
+uv sync --extra dev              # base: solvers + classical ML
+uv sync --extra dev --extra gnn  # adds PyTorch + PyTorch Geometric (heavy)
+```
+
+This installs `python-sat == 1.9.dev15`, which ships MiniSat22, Glucose4,
+CaDiCaL, Maplesat, Lingeling, MapleCM, and Kissat404 in one wheel. No system
+installs.
+
+### Choosing the compute device
+
+The GNN honours `SATSEL_DEVICE` (`cpu`, `cuda`, `cuda:1`, or `auto`, the
+default) and the `gnn_device` config key. Everything else in the pipeline —
+including all solver profiling — is CPU-only by nature and ignores it.
 
 ## Quick start
 
@@ -105,6 +139,49 @@ the training signal was produced. In plain terms:
 `satsel diagnose` (and the web UI's Diagnostics view) prints the label
 distribution, the data-quality warnings, and the per-system choice histogram
 so a degenerate selector is obvious at a glance.
+
+## Where the benchmark instances come from
+
+`satsel bench` downloads real instances from the SATLIB archive at UBC
+(`https://www.cs.ubc.ca/~hoos/SATLIB/`) and fills any shortfall from the seeded
+generators. Every formula records its origin in the manifest `source` column,
+and `dataset_summary.json` reports `source_distribution`, `n_real_instances`
+and `real_instance_share`.
+
+This matters for how the dataset is described. Earlier builds pointed at
+`www.satlib.org`, which has been a parked domain for years, so every download
+failed silently and the corpus was 100% generated while still looking complete.
+If no real instances are downloaded, `provenance_warnings` says so explicitly
+rather than letting the run be written up as an open benchmark collection.
+
+Two archives per random-3SAT family are used deliberately: `uf250-1065`
+(satisfiable) and `uuf250-1065` (unsatisfiable), both at the 4.26 phase
+transition. The quota is split evenly across them, because UNSAT instances are
+where CDCL solvers separate most — a refutation has to be complete, so there is
+no lucky early exit to flatter a weak solver.
+
+Note that real SATLIB files end with a `%` terminator line. Our DIMACS parser
+now handles it; before that fix, every genuine SATLIB instance was rejected.
+
+## The GNN selector
+
+`src/satsel/models/gnn.py` implements the GraSS tripartite architecture named
+in the synopsis: `var` / `lit` / `clause` node types with four relations,
+heterogeneous convolution (`HeteroConv` + `SAGEConv`), sinusoidal positional
+encodings on clause nodes, and a runtime-sensitive expected-cost loss.
+
+Giving literals their own nodes is the point, not decoration. The previous
+implementation built a variable-clause bipartite graph and indexed edges by
+`abs(lit)`, discarding the sign of every occurrence — so `(x OR y)` and
+`(NOT x OR NOT y)` produced identical graphs. `tests/test_gnn.py` pins that
+behaviour as a regression test.
+
+```
+uv run satsel train-gnn --epochs 40      # honours SATSEL_DEVICE
+```
+
+Training reports a per-layer ablation, the histogram of solvers it chose on
+validation, and a warning if it collapsed onto a single solver.
 
 ## Profiling notes
 

@@ -1,32 +1,17 @@
-# React + TypeScript + Vite
+# satsel frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Research dashboard for the satsel solver-selection pipeline (React 19 + TypeScript + Vite + Tailwind 3 + recharts).
 
-Currently, two official plugins are available:
+    npm install
+    npm run dev      # http://localhost:5173, proxies /api -> http://127.0.0.1:5001 (web_server.py)
+    npm run build    # tsc -b && vite build -> dist/, served by web_server.py
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Structure:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+- `src/lib/api.ts` — typed fetch client; 404 is surfaced as `ApiError.isNotFound` so views show "run step X first".
+- `src/lib/types.ts` — response shapes for every endpoint.
+- `src/lib/palette.ts` — one categorical palette (CSS tokens `--chart-1..7`) and stable per-solver colours.
+- `src/hooks/` — `useApi` (load/reload/poll), `usePipeline` (status polling + run-step), `useTheme`.
+- `src/components/views/` — Overview (pipeline stepper + log drawer), Data, Results, Diagnostics, Oracle.
+- `src/components/charts/Charts.tsx` — shared recharts wrappers.
+- `src/components/Primitives.tsx` — page header, section card, callouts, loading/empty/error states, stat tiles.

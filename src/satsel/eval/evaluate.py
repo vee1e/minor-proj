@@ -524,6 +524,8 @@ def _data_quality_warnings(cfg: dict, models: dict, test: pd.DataFrame, label_st
             warnings.append(f"[{src_name}] {w}")
         for w in (src.get("data_quality_warnings") or []):
             warnings.append(f"[{src_name}] {w}")
+        for w in (src.get("provenance_warnings") or []):
+            warnings.append(f"[{src_name}] {w}")
     n_test = int(len(test))
     if n_test < 100:
         warnings.append(f"n_test={n_test} < 100: bootstrap CIs will be wide and the "

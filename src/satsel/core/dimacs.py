@@ -64,6 +64,11 @@ def parse_cnf(
         line = raw.strip()
         if not line:
             continue
+        if line.startswith("%"):
+            # SATLIB terminator: every instance in the SATLIB archives ends
+            # with a "%" line followed by a stray "0". Real benchmark files
+            # are unreadable without this, so treat it as end-of-clauses.
+            break
         if line.startswith(("c", "p")):
             if line.startswith("p"):
                 parts = line.split()

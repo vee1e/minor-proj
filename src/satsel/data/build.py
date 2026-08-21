@@ -124,7 +124,40 @@ def build_dataset(cfg: dict) -> None:
         summary["families"][fam] = entry
 
     summary.update(_label_diagnostics(labels, splits))
+    summary.update(_provenance(manifest, labels))
     (datasets / "dataset_summary.json").write_text(json.dumps(summary, indent=2))
+
+
+def _provenance(manifest: pd.DataFrame, labels: pd.DataFrame) -> dict:
+    """Record where the corpus actually came from.
+
+    Contribution C1 of the synopsis promises an open benchmark dataset drawn
+    from SATLIB and the SAT Competition archive. A run where every downloader
+    failed still produces a full corpus from the seeded generators, and the
+    difference is invisible downstream unless it is written down. So write it
+    down, and warn when the corpus is entirely synthetic.
+    """
+    sub = manifest[manifest["formula_id"].isin(set(labels.index))]
+    counts = {str(k): int(v) for k, v in sub["source"].value_counts().items()}
+    n_total = int(len(sub))
+    n_real = int(sum(v for k, v in counts.items() if k != "generated"))
+    out = {
+        "source_distribution": counts,
+        "n_real_instances": n_real,
+        "n_generated_instances": int(counts.get("generated", 0)),
+        "real_instance_share": (n_real / n_total) if n_total else 0.0,
+        "provenance_warnings": [],
+    }
+    if n_total and n_real == 0:
+        out["provenance_warnings"].append(
+            "corpus is 100% generated: no SATLIB or competition instances were "
+            "downloaded. Do not describe this dataset as an open benchmark "
+            "collection without re-running bench with network access")
+    elif n_total and out["real_instance_share"] < 0.25:
+        out["provenance_warnings"].append(
+            f"only {out['real_instance_share']:.0%} of the corpus is real "
+            "benchmark instances; the rest is generated")
+    return out
 
 
 def _label_diagnostics(labels: pd.DataFrame, splits: dict[str, list[str]]) -> dict:

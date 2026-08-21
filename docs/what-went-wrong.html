@@ -507,8 +507,10 @@ a{color:var(--accent)}
         <tr><td>Benchmark puzzles (SATLIB)</td><td><span class="chip done">available</span></td><td>2,210 real instances, downloadable in minutes</td></tr>
         <tr><td><strong>Solver timings at full scale</strong></td><td><span class="chip todo">must be run</span></td><td>Hours of CPU. Cannot be downloaded — it is the experiment</td></tr>
         <tr><td><strong>Numbers anyone can quote</strong></td><td><span class="chip todo">blocked</span></td><td>Depends entirely on the row above</td></tr>
-        <tr><td>SATfeatPy feature library</td><td><span class="chip part">wording</span></td><td>Not on PyPI; our 63 features cover the same ground. Use it, or reword the synopsis</td></tr>
-        <tr><td>Feature-free comparison baseline</td><td><span class="chip part">~1 hour</span></td><td>The GNN is already feature-free; needs framing plus an ablation</td></tr>
+        <tr><td>Feature extraction inside its time budget</td><td><span class="chip done">fixed</span></td><td>Probe now in-process: ~460&nbsp;ms &rarr; ~156&nbsp;ms, budget respected at every setting</td></tr>
+        <tr><td>DPLL search-space features</td><td><span class="chip done">added</span></td><td>Conflicts, decisions, propagations, restarts. 63 &rarr; 70 features</td></tr>
+        <tr><td>SATfeatPy feature library</td><td><span class="chip part">wording</span></td><td>Not on PyPI; our 70 features cover the same ground. Use it, or reword the synopsis</td></tr>
+        <tr><td>Feature-free comparison (O6)</td><td><span class="chip done">done</span></td><td>GNN trains twice — designed features vs pure topology — on identical splits</td></tr>
       </tbody>
     </table>
   </div>
@@ -586,20 +588,22 @@ uv run satsel diagnose</pre>
     <div>
       <h3>Close the remaining gaps, then write it up</h3>
       <div class="meta">optional but promised in the synopsis</div>
-      <p>Three things the write-up currently claims that the code doesn't do. <strong>None of them
-      blocks anything</strong> — they are write-up polish, not obstacles:</p>
+      <p>One thing remains between what the write-up claims and what the code does, and it
+      is a <strong>wording decision, not work</strong>:</p>
       <ul>
-        <li><strong>SATfeatPy</strong> isn't on PyPI, only GitHub. Our extractor already computes 63
-        features across the same categories. Vendor the repo, or reword to "a SATfeatPy-derived
-        feature set" — both defensible; the second avoids depending on unmaintained research code
-        days before a deadline.</li>
-        <li><strong>The feature-free baseline</strong> is close to free, because the GNN is already
-        feature-free: it learns from raw graph structure, not hand-crafted vectors. What's missing
-        is running it as an explicit no-node-features ablation and labelling it as the comparison
-        point.</li>
-        <li><strong>The probe overhead</strong> is real work, about half a day: 0.46&nbsp;s per
-        puzzle of Python process startup, which breaks the 5% extraction budget you promise.</li>
+        <li><strong>SATfeatPy</strong> isn't on PyPI, only GitHub. Our extractor already
+        computes 70 features across the same categories it covers. Vendor the repo, or reword
+        to "a SATfeatPy-derived feature set" — both defensible; the second avoids depending on
+        unmaintained research code days before a deadline.</li>
       </ul>
+      <p>The other two are now closed. The <strong>feature-free comparison</strong> that
+      objective O6 asks for is produced automatically by <code>train-gnn</code>, which trains
+      the model twice — once with designed node features, once with pure topology — on
+      identical splits, so the gap is attributable to the features alone. And the
+      <strong>feature-extraction budget</strong> is now genuinely respected: the probe runs
+      in-process instead of spawning a Python interpreter per formula, cutting extraction from
+      ~460&nbsp;ms to ~156&nbsp;ms and adding the solver's own search-space counters as
+      features along the way.</p>
       <p>Then write it up including what didn't work. A negative result you can defend is worth
       more than a positive one you can't.</p>
     </div>

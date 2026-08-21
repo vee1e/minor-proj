@@ -171,6 +171,37 @@ failed silently. And real SATLIB files end with a `%` terminator line that our
 DIMACS parser rejected — so even a successful download was discarded as
 malformed. Both are fixed, with a regression test for the terminator.
 
+## Feature extraction and its time budget
+
+Features come in three groups, computed cheapest-first so a hard wall-clock
+budget can be enforced: **syntactic** (counts and clause-length statistics),
+**graph** (degree distributions, clustering, community structure), and a short
+**DPLL probe**. 70 features in total.
+
+The probe runs *in this process*, stopped by the solver's own `interrupt()`.
+It used to write the formula to a temp file and spawn
+`python -m satsel.profiling.worker`, costing roughly 0.45 s of interpreter
+startup and re-parsing per instance — on an easy formula, several hundred times
+the solve time it was measuring, and far outside the `tau_feat <= 5%` budget
+the evaluation protocol promises. Extraction now costs about 156 ms at the
+default 0.2 s budget, and the budget is respected at every setting.
+
+Only some pysat backends implement `interrupt()`. CaDiCaL and Lingeling raise
+`NotImplementedError`, and a CaDiCaL probe given 0.15 s ran for 5.8 s because
+nothing could stop it — so the probe solver must come from
+`core.solvers.INTERRUPTIBLE_SOLVERS` (MiniSat is the default).
+
+Because the probe is now in-process, the solver's own counters are available,
+which is where the search-space features the taxonomy asks for come from:
+conflicts, decisions, propagations and restarts, log-compressed, plus
+scale-free ratios such as propagations-per-decision.
+
+Two caveats worth knowing. Groups are **atomic**: the budget decides whether a
+group is *entered*, because a half-computed group yields no usable features, so
+entry uses a size-based cost estimate. And `interrupt()` sets a flag the solver
+checks periodically rather than stopping instantly (~15 ms), so the probe is
+given a margin and only a fraction of the remaining time.
+
 ## The GNN selector
 
 `src/satsel/models/gnn.py` implements the GraSS tripartite architecture named
@@ -190,6 +221,20 @@ uv run satsel train-gnn --epochs 40      # honours SATSEL_DEVICE
 
 Training reports a per-layer ablation, the histogram of solvers it chose on
 validation, and a warning if it collapsed onto a single solver.
+
+### The feature-free comparison (objective O6)
+
+`train-gnn` trains the model twice: once with the designed per-node-type
+features, and once with every node feature replaced by a constant, leaving the
+network nothing but the graph topology and message passing. Same splits, same
+seeds, same architecture, so the gap between them is attributable to the node
+features alone.
+
+That gap is the feature-engineering-bottleneck question Zhang et al. (2026)
+raise, measured on our own data instead of cited. It lands in
+`results.json` under `gnn_feature_free` and in section 8b of the report.
+Configure the modes with `gnn_node_feats_ablation` (`full`, `structural`,
+`none`).
 
 ## Profiling notes
 

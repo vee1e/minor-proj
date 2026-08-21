@@ -123,7 +123,79 @@ def build_dataset(cfg: dict) -> None:
                 1 for fid in splits[part] if labels.loc[fid, "family"] == fam))
         summary["families"][fam] = entry
 
+    summary.update(_label_diagnostics(labels, splits))
     (datasets / "dataset_summary.json").write_text(json.dumps(summary, indent=2))
+
+
+def _label_diagnostics(labels: pd.DataFrame, splits: dict[str, list[str]]) -> dict:
+    """Label-quality diagnostics so a collapsed/uninformative corpus is visible
+    in dataset_summary.json instead of silently producing a majority-class
+    selector. Keys: label_distribution, label_majority_share, tie_rate,
+    informative_rate, n_train_usable, family_median_best_time_s, warnings."""
+    id_df = labels[~labels["is_ood"]]
+    solved_id = id_df[id_df["vbs_solved"]]
+    dist = {str(k): int(v) for k, v in
+            solved_id["best_solver"].value_counts().sort_values(ascending=False).items()
+            if str(k)}
+    n_lab = int(sum(dist.values()))
+    majority_share = (max(dist.values()) / n_lab) if n_lab else 0.0
+    majority_solver = max(dist, key=dist.get) if dist else ""
+    tie_rate = float(solved_id["tie_flag"].mean()) if len(solved_id) else 0.0
+    informative = solved_id["informative"] if "informative" in solved_id else pd.Series(dtype=bool)
+    informative_rate = float(informative.mean()) if len(informative) else 0.0
+
+    train_ids = [f for f in splits.get("train", []) if f in labels.index]
+    tr = labels.loc[train_ids] if train_ids else labels.iloc[0:0]
+    usable_mask = tr["vbs_solved"].astype(bool)
+    if "informative" in tr:
+        usable_mask = usable_mask & tr["informative"].astype(bool)
+    n_train_usable = int(usable_mask.sum())
+    n_train_solved = int(tr["vbs_solved"].astype(bool).sum())
+
+    fam_median: dict[str, float] = {}
+    for fam in sorted(labels["family"].unique()):
+        sub = labels[(labels["family"] == fam) & labels["vbs_solved"]]
+        fam_median[str(fam)] = float(sub["best_time_s"].median()) if len(sub) else float("nan")
+    overall_median = float(solved_id["best_time_s"].median()) if len(solved_id) else float("nan")
+
+    warnings: list[str] = []
+    if n_lab == 0:
+        warnings.append("no in-distribution formula was solved by any solver; nothing to learn")
+    if n_lab and majority_share > 0.6:
+        warnings.append(
+            f"label_majority_share={majority_share:.2f} ({majority_solver}): labels are "
+            f"dominated by one solver; selector will collapse to it")
+    if n_train_usable < 100:
+        warnings.append(
+            f"n_train_usable={n_train_usable} < 100 (train & vbs_solved & informative; "
+            f"{n_train_solved} train rows solved): too few informative rows to fit a selector")
+    if overall_median == overall_median and overall_median < 0.05:
+        warnings.append(
+            f"median best time {overall_median*1000:.1f}ms < 0.05s: corpus too easy to "
+            f"differentiate solvers; increase generator sizes")
+    if n_lab and informative_rate < 0.3:
+        warnings.append(
+            f"informative_rate={informative_rate:.2f}: most formulas show < label_min_spread "
+            f"runtime gap across the portfolio")
+    if n_lab and tie_rate > 0.7:
+        warnings.append(f"tie_rate={tie_rate:.2f}: best and runner-up are indistinguishable "
+                        f"on most formulas")
+
+    def _f(x: float) -> float | None:
+        return None if x != x else float(x)
+
+    return {
+        "label_distribution": dist,
+        "label_majority_share": float(majority_share),
+        "label_majority_solver": majority_solver,
+        "tie_rate": tie_rate,
+        "informative_rate": informative_rate,
+        "n_train_usable": n_train_usable,
+        "n_train_solved": n_train_solved,
+        "median_best_time_s": _f(overall_median),
+        "family_median_best_time_s": {k: _f(v) for k, v in fam_median.items()},
+        "warnings": warnings,
+    }
 
 
 def _vbs_rate(df: pd.DataFrame) -> float:

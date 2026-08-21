@@ -198,8 +198,11 @@ def gen_random3sat(n: int, ratio: float, rng: np.random.Generator) -> Cnf:
                family="random3sat", source="generated")
 
 
-def gen_random3sat_batch(count: int, seed: int, *, n_lo: int = 80, n_hi: int = 250,
-                         ratio: float = 4.2, family: str = "random3sat") -> list[Cnf]:
+def gen_random3sat_batch(count: int, seed: int, *, n_lo: int = 200, n_hi: int = 320,
+                         ratio: float = 4.26, family: str = "random3sat") -> list[Cnf]:
+    """Uniform random 3-SAT at the phase transition (m/n = 4.26). With n in
+    200..320 the VBS time is typically 0.05s-20s, which is where the portfolio
+    solvers actually differ (below that, labels are construction noise)."""
     rng = np.random.default_rng(seed)
     out: list[Cnf] = []
     for i in range(count):
@@ -212,19 +215,14 @@ def gen_random3sat_batch(count: int, seed: int, *, n_lo: int = 80, n_hi: int = 2
 
 
 def _large_ratio(rng: np.random.Generator) -> float:
-    """Sample a ratio for the large family, keeping most instances away from
-    the hard phase-transition point (4.2) so profiling stays tractable:
-    ~60% easy SAT, ~30% easy UNSAT, ~10% near-critical (hard)."""
-    r = rng.random()
-    if r < 0.60:
-        return float(rng.uniform(3.5, 4.02))
-    if r < 0.90:
-        return float(rng.uniform(4.42, 5.2))
-    return float(rng.uniform(4.02, 4.42))
+    """Ratio for the large family: tightly around the phase transition
+    (4.20..4.32, centred on 4.26) so instances are hard but bounded by the
+    family tau; the spread in ratio adds SAT/UNSAT mix."""
+    return float(rng.uniform(4.20, 4.32))
 
 
-def gen_random3sat_large_batch(count: int, seed: int, *, n_lo: int = 250,
-                               n_hi: int = 550, ratio: float | None = None) -> list[Cnf]:
+def gen_random3sat_large_batch(count: int, seed: int, *, n_lo: int = 320,
+                               n_hi: int = 420, ratio: float | None = None) -> list[Cnf]:
     rng = np.random.default_rng(seed)
     out: list[Cnf] = []
     for i in range(count):
@@ -245,26 +243,32 @@ def gen_colouring_batch(count: int, seed: int) -> list[Cnf]:
     rng = np.random.default_rng(seed)
     out: list[Cnf] = []
     for i in range(count):
-        n = int(rng.integers(30, 90))
+        n = int(rng.integers(60, 170))
         ncol = 3
         colour = rng.integers(0, 3, size=n)
         edges: list[tuple[int, int]] = []
-        target = int(rng.uniform(2.0, 3.0) * n)
+        # planted 3-colouring near the 3-COL threshold (m/n ~ 2.3); flat-graph
+        # style instances here are the ones that separate CDCL heuristics
+        target = int(rng.uniform(2.2, 2.6) * n)
         attempts = 0
+        edge_set: set[tuple[int, int]] = set()
         while len(edges) < target and attempts < 10 * target:
             attempts += 1
             u, w = rng.integers(1, n + 1, size=2)
             if u == w or colour[u - 1] == colour[w - 1]:
                 continue
-            if (u, w) in edges or (w, u) in edges:
+            if (u, w) in edge_set or (w, u) in edge_set:
                 continue
             edges.append((u, w))
+            edge_set.add((u, w))
         if i % 3 == 0:
             clique = rng.choice(n, size=ncol + 1, replace=False) + 1
             for a in range(ncol + 1):
                 for b in range(a + 1, ncol + 1):
-                    if (int(clique[a]), int(clique[b])) not in edges:
-                        edges.append((int(clique[a]), int(clique[b])))
+                    e = (int(clique[a]), int(clique[b]))
+                    if e not in edge_set and (e[1], e[0]) not in edge_set:
+                        edges.append(e)
+                        edge_set.add(e)
         b = Builder("colouring", f"colouring-{i:04d}")
         var = [[b.fresh() for _ in range(ncol)] for _ in range(n)]
         for v in range(n):
@@ -307,6 +311,7 @@ def _bw_reachable(n: int, T: int, initial: tuple[tuple[int, ...], ...],
         if d >= T:
             continue
         for nxt in _bw_neighbors(st):
+            nxt = tuple(sorted(nxt))   # canonical: stack order is irrelevant
             if nxt in seen:
                 continue
             seen.add(nxt)
@@ -455,8 +460,8 @@ def gen_planning_batch(count: int, seed: int) -> list[Cnf]:
     out: list[Cnf] = []
     i = 0
     while len(out) < count:
-        n = int(rng.integers(4, 6))
-        T = int(rng.integers(4, 7))
+        n = int(rng.integers(5, 8))
+        T = int(rng.integers(6, 10))
         initial = _bw_random_state(n, rng)
         goal = _bw_random_state(n, rng)
         reachable = _bw_reachable(n, T, initial, goal)
@@ -552,12 +557,12 @@ def gen_scheduling_batch(count: int, seed: int, *, family: str = "scheduling") -
     out: list[Cnf] = []
     i = 0
     while len(out) < count:
-        n_jobs = int(rng.integers(4, 8))
-        n_mach = int(rng.integers(2, 4))
+        n_jobs = int(rng.integers(6, 11))
+        n_mach = int(rng.integers(2, 5))
         n_ops = n_jobs
-        dur = [int(rng.integers(1, 4)) for _ in range(n_ops)]
+        dur = [int(rng.integers(1, 5)) for _ in range(n_ops)]
         mach = [int(rng.integers(0, n_mach)) for _ in range(n_ops)]
-        horizon = int(rng.integers(6, 12))
+        horizon = int(rng.integers(10, 20))
         order = [(j, j + 1) for j in range(n_ops - 1)]
         truth = _sched_ground_truth(n_ops, horizon, dur, mach, order)
         if len(out) % 3 == 0:
@@ -617,13 +622,15 @@ def gen_industrial_batch(count: int, seed: int) -> list[Cnf]:
     for i in range(count):
         if i % 3 == 0:
             # equivalence UNSAT
-            k = int(rng.integers(5, 9))
+            k = int(rng.integers(8, 13))
             c = _equiv_unsat(k)
             c.name = f"industrial-equiv-{i:04d}"
         else:
-            nbits = int(rng.integers(8, 14))
-            p = int(rng.integers(3, 1 << (nbits // 2)))
-            q = int(rng.integers(3, 1 << (nbits // 2)))
+            nbits = int(rng.integers(14, 22))
+            # odd factors in the upper half of the range: no trivial solutions
+            half = nbits // 2
+            p = int(rng.integers(1 << (half - 1), 1 << half)) | 1
+            q = int(rng.integers(1 << (half - 1), 1 << half)) | 1
             target = p * q
             c = _factoring(nbits, target)
             c.name = f"industrial-fact-{i:04d}"

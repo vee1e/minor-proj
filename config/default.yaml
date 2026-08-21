@@ -7,7 +7,8 @@ feature_schema_version: "1.0"
 
 # ---- Timeouts (seconds) ----
 tau_screen: 30        # screening run budget (P1)
-tau_pres: 5           # Kissat presolve budget (P0)
+tau_pres: 5           # presolve budget (P0)
+presolve_solver: cadical153   # P0 presolver + oracle fallback default; kissat404 segfaults in-process on some pysat builds
 max_timeout: 300      # oracle hard cap
 feat_budget_frac: 0.05
 feat_budget_floor_s: 0.20     # tau_feat = max(feat_budget_frac*mean, this)
@@ -34,8 +35,9 @@ portfolio:
   - maplecm
   - kissat404
 prune_min_unique_share: 0.03   # 3% strictly-best share to survive pruning
-tie_margin: 1.2               # T_2nd <= 1.2*T_1st  -> tie_flag
-tie_floor_ms: 50              # T_1st < 50ms -> tie_flag
+tie_margin: 1.1               # T_2nd <= 1.1*T_1st  -> tie_flag
+tie_floor_ms: 20              # T_1st < 20ms -> tie_flag
+label_min_spread: 1.5         # informative = max_s T(i,s)/T(i,s*) >= 1.5 (training filter)
 
 # ---- GNN scope ----
 gnn_node_cap: 500000          # n + m <= cap, else route to classical path

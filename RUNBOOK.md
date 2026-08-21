@@ -10,8 +10,9 @@ The full spec lives in `DEVELOPMENT_PLAN.md`. The pre-registered evaluation rule
 
 ## What you need before you start
 
-- macOS or Linux.
-- `uv` (the Python package manager). If you do not have it: `brew install uv`, or follow the instructions at https://docs.astral.sh/uv.
+- macOS, Linux, or Windows.
+- `uv` (the Python package manager). If you do not have it: `brew install uv`, `pip install uv`, or follow the instructions at https://docs.astral.sh/uv.
+- Node.js + `npm` if you want the web interface.
 - About 2 GB of free disk space.
 - Time. The slowest step (profiling) takes about 1.5 to 2.5 hours on 11 cores. Every other step takes minutes or seconds.
 
@@ -45,8 +46,13 @@ You should see a line like `34 passed, 3 deselected`.
 One command builds everything, in order:
 
 ```
-uv run satsel all
+uv run satsel all            # full corpus (hours, mostly profiling)
+uv run satsel all --small    # pilot corpus, ~80 formulas per family + 40 OOD (minutes)
+uv run satsel all --tiny     # smoke test of the plumbing only; do not read its numbers
 ```
+
+Use `--small` for a first real run. `--tiny` exists for CI: it is far too small to
+train a selector and `build` will warn you about that.
 
 It runs these steps, in this order:
 
@@ -57,6 +63,10 @@ It runs these steps, in this order:
 5. `train` — train the classical models (Random Forest, XGBoost, SVM) plus the SATzilla baseline, and pick the fallback threshold.
 6. `train-gnn` — train the graph neural network (skip with `--no-gnn`).
 7. `evaluate` — run the pre-registered statistics and write the report.
+
+After `build` and again at the very end it prints any data-quality warnings
+(majority-class labels, high tie rate, too few usable training rows). If you see
+those, the corpus is too easy or too small; do not trust the selector numbers.
 
 When it finishes, open the report:
 
@@ -132,6 +142,18 @@ uv run satsel evaluate
 
 Runs the exact protocol from `EVAL_PROTOCOL.md`: PAR-2 (mean solve time with timeouts counted double), solve rate, the stratified bootstrap confidence interval, Wilcoxon and McNemar tests, Holm-Bonferroni adjustment across the four planned comparisons, the out-of-distribution check, and the robustness appendix. Writes `artifacts/reports/report.md` and `results.json`.
 
+### 3.8 diagnose: check what you have (read-only)
+
+```
+uv run satsel diagnose
+```
+
+Prints the dataset warnings and label distribution, the model diagnostics
+(predicted-class distribution, CV scores, portfolio complementarity, theta),
+and the per-system choice histogram from `results.json`. Run it whenever a
+result looks suspicious, for example when one solver is picked for every
+formula.
+
 ## 4. Use the one public API
 
 After training, the trained selector is wrapped in a single call. Save a CNF file and run:
@@ -162,6 +184,61 @@ Guarantees you can rely on:
 - **It takes content bytes, not file paths.** A path-based variant exists but rejects symlinks and anything outside the allowed folder.
 - **Inputs are size-checked** before any solver memory is allocated.
 
+## 4b. Web interface
+
+```
+cd frontend
+npm install
+npm run build        # or `npm run dev` for live development
+cd ..
+uv run satsel web    # http://127.0.0.1:5001 ; add --debug for Flask debug mode
+```
+
+The web page shows pipeline status, lets you start each step (logs stream into
+`artifacts/web_logs/`), shows profiling, dataset, diagnostics and evaluation
+views, and lets you paste a CNF to run the oracle. Steps started from the page
+run with the same Python interpreter as the server, so `uv` need not be on PATH.
+
+## Why the selector used to always pick MiniSat, and what changed
+
+An early run of the pipeline produced a "selector" that chose MiniSat for every
+formula. That was not a modelling insight; it was four compounding bugs in how
+the training signal was produced. In plain terms:
+
+1. **Timing measured clause loading, not solving (R1).** The stopwatch started
+   before the Python loop that feeds clauses into the solver object. On the
+   small generated formulas every solver finishes in milliseconds, so the
+   "runtime" was dominated by per-solver constant overhead, and the solver with
+   the lightest Python wrapper (MiniSat) "won" nearly every time. Timing now
+   wraps only `solve()` (`perf_counter`) and also records PySAT's own
+   `time()` / `time_accum()` when available.
+
+2. **The tie rule threw away almost all training rows (R2).** Labels treated
+   any formula where the fastest two solvers were within 50 ms or a 1.2x margin
+   as a tie, and ties were excluded from training. On an easy corpus that was
+   nearly everything, so the classifier saw a handful of rows and collapsed to
+   the majority class. The solved-check also used the *minimum* run while the
+   label used the *median*, which is inconsistent. Both are fixed, and `build`
+   now reports tie rate, informative rate, usable training rows and the label
+   distribution, with explicit warnings.
+
+3. **The corpus was far too easy (R3).** The old `--small` corpus
+   (30/10/20/... formulas) and the default generator sizes produced instances
+   that every solver finished in under 0.1 s. There was no solver
+   differentiation to learn. `--small` is now a ~80-per-family pilot corpus
+   (40 OOD), and the old sizes live under `--tiny` for CI smoke tests only.
+
+4. **The classical models hid the collapse (R4).** SVM was trained on
+   unscaled features, there was no class balancing, no cross-validation, no
+   calibration, and model choice was made on a tiny validation set. Nothing
+   printed the predicted-class distribution, so "always MiniSat" was
+   invisible. Training now uses scaling, balanced cost-weighted loss, nested
+   CV with Platt calibration, and writes `artifacts/models/model_diagnostics.json`.
+
+`satsel diagnose` (and the web UI's Diagnostics view) prints the label
+distribution, the data-quality warnings, and the per-system choice histogram
+so a degenerate selector is obvious at a glance.
+
 ## 5. Tests
 
 ```
@@ -189,7 +266,9 @@ minor-proj/
 │   ├── models/            steps 5-6: classical + GNN
 │   ├── oracle/            step 7: the public API
 │   ├── eval/              step 8: metrics + stats + report
-│   └── cli.py             the `satsel` command
+│   ├── cli.py             the `satsel` command (also `python -m satsel.cli`)
+│   └── web_server.py      Flask API + static frontend
+├── frontend/              React UI (npm run build -> frontend/dist)
 ├── tests/
 └── artifacts/             all outputs; gitignored
 ```
@@ -205,6 +284,10 @@ One rule governs the code: a module may only import from `core` or earlier stage
 **`torch` / `torch_geometric` errors** when running `train-gnn`. You installed without the GNN extra. Run `uv sync --extra gnn`.
 
 **Profiling seems stuck at 0 done for minutes.** That is normal only for the hardest family. Easy families are processed first now, so if it is still at zero after a couple of minutes, check that you are on a recent version of the code and that the heartbeat is printing. If you see heartbeat lines but no completions, you are profiling genuinely hard formulas; Ctrl-C and re-run to resume later.
+
+**The selector picks the same solver for every formula.** Run `uv run satsel diagnose`. If `label_majority_share` is close to 1 or `tie_rate` is high, the corpus is too easy (see "Why the selector used to always pick MiniSat"). Re-run `bench` without `--tiny`, ideally the full corpus, then `profile`, `build`, `train`, `evaluate`.
+
+**`uv run satsel web` starts but the page is blank / says the frontend is not built.** Run `cd frontend && npm install && npm run build`, then reload.
 
 **The report says a comparison "not run".** The GNN comparison needs `train-gnn` to have run. The robustness appendix needs a solver hook that is only wired in nightly jobs.
 

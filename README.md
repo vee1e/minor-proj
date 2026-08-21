@@ -20,8 +20,15 @@ This installs `python-sat == 1.9.dev15`, which ships MiniSat22, Glucose4, CaDiCa
 Build everything end to end:
 
 ```
-uv run satsel all
+uv run satsel all            # full corpus (profiling takes hours)
+uv run satsel all --small    # pilot corpus: ~80 per family + 40 OOD, minutes
+uv run satsel all --tiny     # CI smoke test only; too small to learn from
 ```
+
+`all` runs bench -> features -> profile -> build -> train -> train-gnn
+(skip with `--no-gnn`) -> evaluate, and prints the data-quality warnings from
+`dataset_summary.json` after `build` and again at the very end so they cannot
+be missed.
 
 Or run each stage separately, in this order:
 
@@ -35,7 +42,69 @@ uv run satsel train-gnn    # 6. GNN (optional extra)
 uv run satsel evaluate     # 7. metrics + stats + report
 ```
 
-The report lands at `artifacts/reports/report.md`.
+The report lands at `artifacts/reports/report.md`. To check the health of
+whatever has been produced so far without training anything:
+
+```
+uv run satsel diagnose     # label distribution, warnings, model diagnostics,
+                           # per-system choice histogram
+```
+
+## Web interface
+
+```
+cd frontend && npm install && npm run build && cd ..
+uv run satsel web                 # http://127.0.0.1:5001
+uv run satsel web --debug --port 5002
+```
+
+The Flask server serves `frontend/dist` and a JSON API (`/api/status`,
+`/api/run-step`, `/api/logs/<step>`, `/api/profiling-stats`,
+`/api/dataset-stats`, `/api/evaluate-stats`, `/api/diagnostics`,
+`/api/report`, `/api/config`, `/api/solve`). Pipeline steps started from the UI
+run as `python -m satsel.cli <step>` with the server's own interpreter, so
+`uv` does not need to be on PATH. For frontend development run
+`npm run dev` in `frontend/` alongside `uv run satsel web`.
+
+## Why the selector used to always pick MiniSat, and what changed
+
+An early run of the pipeline produced a "selector" that chose MiniSat for every
+formula. That was not a modelling insight; it was four compounding bugs in how
+the training signal was produced. In plain terms:
+
+1. **Timing measured clause loading, not solving (R1).** The stopwatch started
+   before the Python loop that feeds clauses into the solver object. On the
+   small generated formulas every solver finishes in milliseconds, so the
+   "runtime" was dominated by per-solver constant overhead, and the solver with
+   the lightest Python wrapper (MiniSat) "won" nearly every time. Timing now
+   wraps only `solve()` (`perf_counter`) and also records PySAT's own
+   `time()` / `time_accum()` when available.
+
+2. **The tie rule threw away almost all training rows (R2).** Labels treated
+   any formula where the fastest two solvers were within 50 ms or a 1.2x margin
+   as a tie, and ties were excluded from training. On an easy corpus that was
+   nearly everything, so the classifier saw a handful of rows and collapsed to
+   the majority class. The solved-check also used the *minimum* run while the
+   label used the *median*, which is inconsistent. Both are fixed, and `build`
+   now reports tie rate, informative rate, usable training rows and the label
+   distribution, with explicit warnings.
+
+3. **The corpus was far too easy (R3).** The old `--small` corpus
+   (30/10/20/... formulas) and the default generator sizes produced instances
+   that every solver finished in under 0.1 s. There was no solver
+   differentiation to learn. `--small` is now a ~80-per-family pilot corpus
+   (40 OOD), and the old sizes live under `--tiny` for CI smoke tests only.
+
+4. **The classical models hid the collapse (R4).** SVM was trained on
+   unscaled features, there was no class balancing, no cross-validation, no
+   calibration, and model choice was made on a tiny validation set. Nothing
+   printed the predicted-class distribution, so "always MiniSat" was
+   invisible. Training now uses scaling, balanced cost-weighted loss, nested
+   CV with Platt calibration, and writes `artifacts/models/model_diagnostics.json`.
+
+`satsel diagnose` (and the web UI's Diagnostics view) prints the label
+distribution, the data-quality warnings, and the per-system choice histogram
+so a degenerate selector is obvious at a glance.
 
 ## Profiling notes
 
@@ -82,7 +151,9 @@ src/satsel/
   models/      steps 5-6: classical + GNN
   oracle/      step 7: SolverOracle
   eval/        step 8: metrics + stats + report
-  cli.py       command-line runner
+  cli.py       command-line runner (also `python -m satsel.cli`)
+  web_server.py Flask API + static frontend
+frontend/      React UI (npm)
 tests/
 config/default.yaml   # frozen settings
 artifacts/            # outputs, gitignored

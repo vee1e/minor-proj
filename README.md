@@ -126,26 +126,50 @@ glance -- no dashboard required.
 
 ## Where the benchmark instances come from
 
-`satsel bench` downloads real instances from the SATLIB archive at UBC
-(`https://www.cs.ubc.ca/~hoos/SATLIB/`) and fills any shortfall from the seeded
-generators. Every formula records its origin in the manifest `source` column,
-and `dataset_summary.json` reports `source_distribution`, `n_real_instances`
-and `real_instance_share`.
+`satsel bench` builds the corpus from **real SATLIB instances** downloaded from
+the canonical UBC mirror, topped up by the project's seeded generators for the
+families SATLIB does not cover.
 
-This matters for how the dataset is described. Earlier builds pointed at
+```
+uv run satsel sources           # what is available, and what is cached
+uv run satsel sources --probe   # check every archive is reachable
+uv run satsel sources --fetch   # download them all now (~4 MB, then works offline)
+```
+
+**2,210 real instances are available** — enough alone to meet the N >= 2,000
+target in the synopsis:
+
+| family | archives | instances |
+| --- | --- | ---: |
+| random3sat | uf/uuf at n = 150–250, plus CBS | 1,999 |
+| colouring | flat200-479, flat125-301 | 200 |
+| planning | logistics, blocksworld | 11 |
+
+Generators then cover `random3sat_large`, `industrial`, `crypto`, `scheduling`
+and the held-out `ood_scheduling` family.
+
+A family's quota is split across its archives **by weight**, not evenly. The
+`uf/uuf250` sets sit on the 4.26 phase transition where solvers disagree most
+and are weighted highest; `uf150` and `CBS` solve in milliseconds on everything
+and are weighted lowest. Satisfiable and unsatisfiable sets at each size carry
+equal weight deliberately — UNSAT is where CDCL solvers separate most, since a
+refutation must exhaust the search space rather than stumbling onto an answer.
+Allocation uses largest-remainder apportionment so that balance stays exact.
+
+Archives are cached in `artifacts/raw/_cache/`; copy that folder to an offline
+machine and `bench` runs there with no network at all.
+
+Provenance is recorded, not assumed: the manifest carries a `source` column and
+`dataset_summary.json` reports `source_distribution`, `n_real_instances` and
+`real_instance_share`. If nothing downloads, `provenance_warnings` says so
+rather than letting a fully synthetic corpus be described as a benchmark
+collection.
+
+Two notes on why this needed fixing. Earlier builds pointed at
 `www.satlib.org`, which has been a parked domain for years, so every download
-failed silently and the corpus was 100% generated while still looking complete.
-If no real instances are downloaded, `provenance_warnings` says so explicitly
-rather than letting the run be written up as an open benchmark collection.
-
-Two archives per random-3SAT family are used deliberately: `uf250-1065`
-(satisfiable) and `uuf250-1065` (unsatisfiable), both at the 4.26 phase
-transition. The quota is split evenly across them, because UNSAT instances are
-where CDCL solvers separate most — a refutation has to be complete, so there is
-no lucky early exit to flatter a weak solver.
-
-Note that real SATLIB files end with a `%` terminator line. Our DIMACS parser
-now handles it; before that fix, every genuine SATLIB instance was rejected.
+failed silently. And real SATLIB files end with a `%` terminator line that our
+DIMACS parser rejected — so even a successful download was discarded as
+malformed. Both are fixed, with a regression test for the terminator.
 
 ## The GNN selector
 

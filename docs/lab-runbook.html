@@ -107,10 +107,11 @@
     <a href="#s2"><b>2</b> Pilot check (here)</a>
     <a href="#s3"><b>3</b> Go / no-go gate</a>
     <a href="#s4"><b>4</b> Lab setup</a>
-    <a href="#s5"><b>5</b> Full profiling</a>
-    <a href="#s6"><b>6</b> Training</a>
-    <a href="#s7"><b>7</b> Evaluate</a>
-    <a href="#s8"><b>8</b> If it collapses</a>
+    <a href="#s5"><b>5</b> Fetch the corpus</a>
+    <a href="#s6"><b>6</b> Full profiling</a>
+    <a href="#s7"><b>7</b> Training</a>
+    <a href="#s8"><b>8</b> Evaluate</a>
+    <a href="#s9"><b>9</b> If it collapses</a>
   </nav>
 
   <main>
@@ -226,10 +227,53 @@ uv run satsel diagnose</pre></div>
     </section>
 
     <section id="s5">
-      <div class="head"><span class="num">5</span><h2>Full profiling run</h2>
+      <div class="head"><span class="num">5</span><h2>Fetch the benchmark corpus</h2>
+        <span class="where">minutes &middot; needs network once</span></div>
+      <p>The puzzles themselves are a download and take minutes. Do this while you still
+      have internet — the lab machine may not, and the cache is portable.</p>
+      <div class="cmd"><button class="copy" type="button">copy</button><pre>uv run satsel sources             # what exists, and what is already cached
+uv run satsel sources --probe     # confirm every archive is reachable
+uv run satsel sources --fetch     # download all of them (~4 MB)</pre></div>
+      <p><strong>2,210 real instances</strong> are available from SATLIB, which alone meets
+      the N&nbsp;&ge;&nbsp;2,000 target in the synopsis:</p>
+      <div class="tw"><table>
+        <thead><tr><th>Family</th><th>Archives</th><th>Instances</th><th>Note</th></tr></thead>
+        <tbody>
+          <tr><td>random3sat</td><td class="n">uf/uuf 150–250, CBS</td><td class="n">1,999</td><td>uf/uuf250 sit on the 4.26 phase transition</td></tr>
+          <tr><td>colouring</td><td class="n">flat200-479, flat125-301</td><td class="n">200</td><td></td></tr>
+          <tr><td>planning</td><td class="n">logistics, blocksworld</td><td class="n">11</td><td>all that exist</td></tr>
+        </tbody>
+      </table></div>
+      <p>Generators cover what SATLIB has no equivalent for: <code>random3sat_large</code>,
+      <code>industrial</code>, <code>crypto</code>, <code>scheduling</code> and the held-out
+      <code>ood_scheduling</code> family.</p>
+
+      <div class="note"><span class="lbl">Working offline at the lab</span>
+      <p>Everything is cached under <code>artifacts/raw/_cache/</code>. Warm it on a networked
+      machine, copy that one folder to the same path on the lab machine, and
+      <code>satsel bench</code> runs there with no network at all.</p></div>
+
+      <p>Within a family the quota is split <em>by weight</em> rather than evenly, so hard
+      instances are not diluted by easy ones. Satisfiable and unsatisfiable sets at each size
+      carry equal weight on purpose — proving a formula has <em>no</em> solution means
+      exhausting the search space, with no lucky early exit, which is exactly where the seven
+      solvers pull apart.</p>
+
+      <p>Check what you actually got, rather than assuming:</p>
+      <div class="cmd"><button class="copy" type="button">copy</button><pre>uv run satsel bench --small
+python -c "import pandas as pd; d=pd.read_parquet('artifacts/manifests/formulas.parquet'); print(d['source'].value_counts())"</pre></div>
+      <p>The pilot lands around a third real, because SATLIB only covers three of the eight
+      families. <code>dataset_summary.json</code> reports <code>real_instance_share</code>, and
+      warns if the corpus is entirely synthetic. To raise the real share, increase the counts
+      for the three SATLIB-covered families — at the cost of changing the family balance of the
+      study, which is a design decision worth making on purpose.</p>
+    </section>
+
+    <section id="s6">
+      <div class="head"><span class="num">6</span><h2>Full profiling run</h2>
         <span class="where">lab machine · hours</span></div>
       <p>Set the worker count to roughly half the physical cores. On a 32-core box:</p>
-      <div class="cmd"><button class="copy" type="button">copy</button><pre>uv run satsel bench                      # downloads SATLIB + generates the rest
+      <div class="cmd"><button class="copy" type="button">copy</button><pre>uv run satsel bench                      # uses the cache from step 5
 uv run satsel features --workers 16
 uv run satsel profile --workers 16 --heartbeat 30</pre></div>
       <p>The profiler prints a heartbeat with rate and ETA, processes easy families first so
@@ -244,8 +288,8 @@ python -c "import pandas as pd; d=pd.read_parquet('artifacts/manifests/formulas.
       <code>artifacts/raw/_cache/</code> from a machine that does have access instead.</p>
     </section>
 
-    <section id="s6">
-      <div class="head"><span class="num">6</span><h2>Training</h2>
+    <section id="s7">
+      <div class="head"><span class="num">7</span><h2>Training</h2>
         <span class="where">lab machine · minutes</span></div>
       <div class="cmd"><button class="copy" type="button">copy</button><pre>uv run satsel build
 uv run satsel train                      # RF / XGBoost / SVM / regret + SATzilla baseline
@@ -261,8 +305,8 @@ SATSEL_DEVICE=cpu  uv run satsel train-gnn --epochs 40    # force CPU</pre></div
       <code>collapsed</code> flag is the one to look at.</p>
     </section>
 
-    <section id="s7">
-      <div class="head"><span class="num">7</span><h2>Evaluate and read the result</h2>
+    <section id="s8">
+      <div class="head"><span class="num">8</span><h2>Evaluate and read the result</h2>
         <span class="where">lab machine · minutes</span></div>
       <div class="cmd"><button class="copy" type="button">copy</button><pre>uv run satsel evaluate
 uv run satsel diagnose</pre></div>
@@ -285,8 +329,8 @@ uv run satsel diagnose</pre></div>
       artefact, which is why it now appears in the report and <code>diagnose</code>.</p></div>
     </section>
 
-    <section id="s8">
-      <div class="head"><span class="num">8</span><h2>If it still collapses</h2>
+    <section id="s9">
+      <div class="head"><span class="num">9</span><h2>If it still collapses</h2>
         <span class="where">diagnosis</span></div>
       <p>Work down this list; the order is by likelihood.</p>
       <ol>

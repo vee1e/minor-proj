@@ -188,7 +188,11 @@ class TestTrainAndPredict:
         assert np.isfinite(res["val_par2"])
         assert res["n_train"] > 0
         assert (tmp_path / "models" / "gnn.pt").exists()
-        assert len(res["layer_ablation"]) == 1
+        # one entry per (node_feats mode x layer count)
+        modes = {e["node_feats"] for e in res["layer_ablation"]}
+        layers = {e["n_layers"] for e in res["layer_ablation"]}
+        assert len(res["layer_ablation"]) == len(modes) * len(layers)
+        assert layers == {1}
 
         state = torch.load(tmp_path / "models" / "gnn.pt",
                            map_location="cpu", weights_only=False)
@@ -218,6 +222,74 @@ class TestTrainAndPredict:
         assert sum(hist.values()) > 0
         if max(hist.values()) / sum(hist.values()) > 0.9:
             assert any("collapsed" in w for w in res["warnings"])
+
+
+class TestFeatureFreeAblation:
+    """Objective O6: how much do hand-designed node features actually buy?"""
+
+    def test_modes_keep_identical_shapes(self):
+        cnf = parse_cnf(b"p cnf 3 2\n1 -2 3 0\n-1 2 0\n")
+        shapes = {}
+        for mode in ("full", "structural", "none"):
+            g = cnf_to_hetero(cnf, cnf.nvars, mode)
+            shapes[mode] = {t: tuple(g[t].x.shape) for t in NODE_TYPES}
+        assert shapes["full"] == shapes["structural"] == shapes["none"]
+
+    def test_modes_produce_different_inputs(self):
+        cnf = parse_cnf(b"p cnf 4 3\n1 -2 3 0\n-1 2 0\n3 -4 0\n")
+        xs = {m: cnf_to_hetero(cnf, cnf.nvars, m)["var"].x for m in
+              ("full", "structural", "none")}
+        assert not torch.equal(xs["full"], xs["none"])
+        assert not torch.equal(xs["full"], xs["structural"])
+
+    def test_none_is_pure_topology(self):
+        cnf = parse_cnf(b"p cnf 4 3\n1 -2 3 0\n-1 2 0\n3 -4 0\n")
+        g = cnf_to_hetero(cnf, cnf.nvars, "none")
+        for t in NODE_TYPES:
+            assert torch.all(g[t].x == 1.0), f"{t} still carries feature values"
+        # edges must be untouched -- topology is all the model has left
+        assert g["lit", "in", "clause"].edge_index.shape[1] == 7
+
+    def test_unknown_mode_rejected(self):
+        cnf = parse_cnf(b"p cnf 2 1\n1 2 0\n")
+        with pytest.raises(ValueError, match="unknown node_feats"):
+            cnf_to_hetero(cnf, cnf.nvars, "nonsense")
+
+    def test_training_reports_the_comparison(self, tmp_path):
+        ds = _synthetic_dataset(tmp_path, n=90)
+        cfg = {
+            "paths": {"models": tmp_path / "models"},
+            "gnn_layer_ablation": [1],
+            "gnn_node_feats_ablation": ["full", "none"],
+            "gnn_node_cap": 10 ** 9,
+            "gnn_batch_size": 8,
+        }
+        res = train_gnn(ds, cfg, seed=100, epochs=4)
+
+        comp = res["feature_free_comparison"]
+        assert set(comp) == {"full", "none"}
+        assert all(np.isfinite(v) for v in comp.values())
+        assert {e["node_feats"] for e in res["layer_ablation"]} == {"full", "none"}
+        assert res["node_feats"] in ("full", "none")
+        assert any("feature-free" in w for w in res["warnings"])
+
+    def test_saved_model_records_its_mode(self, tmp_path):
+        """predict_gnn must rebuild the same inputs the model was trained on."""
+        ds = _synthetic_dataset(tmp_path, n=60)
+        cfg = {
+            "paths": {"models": tmp_path / "models"},
+            "gnn_layer_ablation": [1],
+            "gnn_node_feats_ablation": ["none"],
+            "gnn_node_cap": 10 ** 9,
+            "gnn_batch_size": 8,
+        }
+        train_gnn(ds, cfg, seed=3, epochs=2)
+        state = torch.load(tmp_path / "models" / "gnn.pt",
+                           map_location="cpu", weights_only=False)
+        assert state["node_feats"] == "none"
+        cnf = parse_cnf(b"p cnf 3 2\n1 -2 3 0\n-1 2 0\n")
+        solver, conf = predict_gnn(state, cnf, cnf.nvars, state["solver_list"])
+        assert solver in SOLVERS and 0.0 <= conf <= 1.0
 
 
 class TestDevice:

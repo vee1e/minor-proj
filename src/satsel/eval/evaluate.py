@@ -656,6 +656,7 @@ def run_evaluation(cfg: dict, selector_kind: str = "auto", include_gnn: bool = T
         "theta": theta_info.get("theta"),
         "comparisons": comparisons,
         "feat_overhead_used": bool("feat_cost_s" in dataset.columns),
+        "gnn_feature_free": _gnn_feature_free(models),
         "per_system_choice_hist": choice_hist,
         "classification": classification,
         "per_family": _per_family_block(test, par2, cfg),
@@ -674,6 +675,24 @@ def run_evaluation(cfg: dict, selector_kind: str = "auto", include_gnn: bool = T
                        "best_average_solver") if k in portfolio},
     }
     return results
+
+
+def _gnn_feature_free(models: dict) -> dict:
+    """Objective O6: GNN with designed node features vs pure topology.
+
+    Both are trained on identical splits by `train-gnn`, so the difference is
+    attributable to the node features alone. Empty when no GNN is present.
+    """
+    gnn = models.get("gnn")
+    if not isinstance(gnn, dict):
+        return {}
+    comp = gnn.get("feature_free_comparison") or {}
+    out = {str(k): float(v) for k, v in comp.items()}
+    if "full" in out and "none" in out:
+        out["delta_par2"] = out["none"] - out["full"]
+        out["note"] = ("positive delta means the designed node features help; "
+                       "near zero means the graph topology alone carries the signal")
+    return out
 
 
 def run_ood(cfg: dict) -> dict:

@@ -22,6 +22,9 @@ from satsel.core.schemas import RUN_SOLVED
 
 FEATURE_SCHEMA_VERSION = "1.0"
 PROBE_BUDGET_S = 0.2
+# CaDiCaL: robust in-process on every platform we run on (kissat404 segfaults
+# in-process on some Windows builds of pysat, which silently voided every probe).
+PROBE_SOLVER = "cadical153"
 
 
 @dataclass(frozen=True)
@@ -248,7 +251,7 @@ def _probe(cnf: Cnf, budget_s: float, seed: int) -> dict[str, float]:
         tmp.write(cnf.to_dimacs())
         tmp.close()
         argv = [sys.executable, "-m", "satsel.profiling.worker",
-                "--cnf", tmp.name, "--solver", "kissat404",
+                "--cnf", tmp.name, "--solver", PROBE_SOLVER,
                 "--timeout", str(budget_s), "--seed", str(seed)]
         res = run_subprocess(argv, timeout_s=budget_s + 1.0)
         payload = json.loads(res.stdout.decode().strip())

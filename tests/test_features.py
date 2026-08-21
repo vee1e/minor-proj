@@ -1,7 +1,6 @@
 """Feature extraction tests."""
 
 from satsel.bench import generators as g
-from satsel.core.dimacs import parse_cnf
 from satsel.features.extractor import (
     FEATURE_GROUPS,
     FEATURE_NAMES,
@@ -25,8 +24,12 @@ class TestFeatures:
 
     def test_deterministic(self):
         c = g.gen_random3sat_batch(1, 2)[0]
-        a = extract_features(c, 0.001, seed=7)  # no probe -> fully deterministic
-        b = extract_features(c, 0.001, seed=7)
+        # 40ms: always enough for the syntactic+graph groups, but below the
+        # 50ms probe threshold, so no probe -> fully deterministic.
+        a = extract_features(c, 0.04, seed=7)
+        b = extract_features(c, 0.04, seed=7)
+        missing = {n for n, m in zip(a.names, a.missing, strict=True) if m}
+        assert "probe_runtime_s" in missing and "gr_density" not in missing
         assert a.values == b.values
 
 

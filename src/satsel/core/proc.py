@@ -80,6 +80,23 @@ def run_subprocess(
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
     """Kill the child's whole process group so grandchildren die too."""
+    if os.name == "nt" or not hasattr(os, "getpgid"):
+        # Windows has no process groups in the POSIX sense; kill the tree.
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        return
     try:
         pgid = os.getpgid(proc.pid)
     except (ProcessLookupError, PermissionError):

@@ -28,6 +28,7 @@ import io
 import logging
 import tarfile
 from pathlib import Path
+from typing import NamedTuple
 
 import requests
 
@@ -42,20 +43,122 @@ MAX_MEMBER_BYTES = 8 * 1024 * 1024        # a single CNF over 8 MB is not ours
 
 SATLIB_BASE = "https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT"
 
-# (family, archive path, satisfiability of the set, human label).
-# Ordered by value to this project: the uf/uuf250-1065 sets sit exactly on the
-# 4.26 phase transition, and the UNSAT half is where CDCL solvers differ most
-# (an UNSAT answer needs a full refutation, so there is no lucky early exit).
-SATLIB_ARCHIVES: tuple[tuple[str, str, str, str], ...] = (
-    ("random3sat", "RND3SAT/uf250-1065.tar.gz", "sat", "uf250-1065"),
-    ("random3sat", "RND3SAT/uuf250-1065.tar.gz", "unsat", "uuf250-1065"),
-    ("random3sat", "RND3SAT/uf225-960.tar.gz", "sat", "uf225-960"),
-    ("random3sat", "RND3SAT/uuf225-960.tar.gz", "unsat", "uuf225-960"),
-    ("colouring", "GCP/flat200-479.tar.gz", "sat", "flat200-479"),
-    ("colouring", "GCP/flat125-301.tar.gz", "sat", "flat125-301"),
-    ("planning", "PLANNING/logistics.tar.gz", "sat", "logistics"),
-    ("planning", "PLANNING/blocksworld.tar.gz", "sat", "blocksworld"),
+
+class Archive(NamedTuple):
+    """One SATLIB tarball and what it is worth to this study.
+
+    `weight` drives how a family's quota is split across its archives. An even
+    split would drown the hard instances in easy ones: uf150 and CBS solve in
+    milliseconds on every solver in the portfolio and so contribute no signal
+    about which solver to pick, while uf250 and especially uuf250 sit right on
+    the difficulty peak. `n_instances` is the true member count, measured by
+    unpacking each archive, and is used for quota clamping and for `satsel
+    sources` so nobody has to guess what a full fetch yields.
+    """
+
+    family: str
+    path: str
+    status: str          # "sat" | "unsat" | "mixed"
+    label: str
+    n_instances: int
+    nvars: int
+    weight: int
+
+
+# Measured by unpacking every archive; totals 2,210 real instances, which alone
+# meets the N >= 2,000 target in the synopsis. Generators then only need to
+# cover the families SATLIB has no equivalent for (industrial, crypto, and the
+# held-out OOD family).
+#
+# The uf/uuf pairs matter: uf is satisfiable, uuf is not. Equal weight on both
+# keeps the corpus balanced, and the UNSAT half is where CDCL solvers separate
+# most, because proving unsatisfiability requires exhausting the search space
+# rather than stumbling onto a solution early.
+SATLIB_ARCHIVES: tuple[Archive, ...] = (
+    # Random 3-SAT at the 4.26 phase transition, hardest first.
+    Archive("random3sat", "RND3SAT/uf250-1065.tar.gz", "sat", "uf250-1065", 100, 250, 5),
+    Archive("random3sat", "RND3SAT/uuf250-1065.tar.gz", "unsat", "uuf250-1065", 100, 250, 5),
+    Archive("random3sat", "RND3SAT/uf225-960.tar.gz", "sat", "uf225-960", 100, 225, 4),
+    Archive("random3sat", "RND3SAT/uuf225-960.tar.gz", "unsat", "uuf225-960", 100, 225, 4),
+    Archive("random3sat", "RND3SAT/uf200-860.tar.gz", "sat", "uf200-860", 100, 200, 3),
+    Archive("random3sat", "RND3SAT/uuf200-860.tar.gz", "unsat", "uuf200-860", 99, 200, 3),
+    Archive("random3sat", "RND3SAT/uf175-753.tar.gz", "sat", "uf175-753", 100, 175, 1),
+    Archive("random3sat", "RND3SAT/uuf175-753.tar.gz", "unsat", "uuf175-753", 100, 175, 1),
+    Archive("random3sat", "RND3SAT/uf150-645.tar.gz", "sat", "uf150-645", 100, 150, 1),
+    Archive("random3sat", "RND3SAT/uuf150-645.tar.gz", "unsat", "uuf150-645", 100, 150, 1),
+    # Controlled backbone size, 1,000 instances but small; an easy tier that
+    # adds size diversity without being allowed to dominate.
+    Archive("random3sat", "CBS/CBS_k3_n100_m403_b10.tar.gz", "sat",
+            "CBS_k3_n100_m403_b10", 1000, 100, 1),
+    # Graph colouring (flat graphs, 3-colourable).
+    Archive("colouring", "GCP/flat200-479.tar.gz", "sat", "flat200-479", 100, 600, 3),
+    Archive("colouring", "GCP/flat125-301.tar.gz", "sat", "flat125-301", 100, 375, 2),
+    # Planning. Only 11 instances exist, so take all of them.
+    Archive("planning", "PLANNING/logistics.tar.gz", "sat", "logistics", 4, 828, 1),
+    Archive("planning", "PLANNING/blocksworld.tar.gz", "sat", "blocksworld", 7, 459, 1),
 )
+
+
+def archives_for(family: str) -> list[Archive]:
+    return [a for a in SATLIB_ARCHIVES if a.family == family]
+
+
+def total_available(family: str | None = None) -> int:
+    """How many real instances a full fetch would yield."""
+    pool = SATLIB_ARCHIVES if family is None else archives_for(family)
+    return sum(a.n_instances for a in pool)
+
+
+def allocate(archives: list[Archive], want: int) -> dict[str, int]:
+    """Split `want` across `archives` by weight, clamped to what each holds.
+
+    Uses largest-remainder apportionment rather than a sequential greedy split,
+    so two archives with the same weight receive the same quota. That matters
+    here: uf and uuf sets at a given size are deliberately weighted equally to
+    keep the corpus balanced between satisfiable and unsatisfiable instances,
+    and a greedy loop would quietly skew it toward whichever came first.
+
+    Overflow from an archive clamped at its true size is redistributed to
+    archives that still have room, so asking for more than one set can supply
+    never silently loses instances.
+    """
+    if want <= 0 or not archives:
+        return {}
+
+    quota = {a.label: 0 for a in archives}
+    remaining = want
+    eligible = [a for a in archives if a.n_instances > 0]
+
+    while remaining > 0 and eligible:
+        total_w = sum(a.weight for a in eligible)
+        if total_w <= 0:
+            break
+
+        # Hare quota: floor of the exact share, then hand out what is left over
+        # to the largest fractional remainders.
+        exact = {a.label: remaining * a.weight / total_w for a in eligible}
+        base = {lbl: int(val) for lbl, val in exact.items()}
+        leftover = remaining - sum(base.values())
+        order = sorted(eligible,
+                       key=lambda a: (-(exact[a.label] - base[a.label]),
+                                      archives.index(a)))
+        for a in order[:leftover]:
+            base[a.label] += 1
+
+        progressed = False
+        for a in list(eligible):
+            room = a.n_instances - quota[a.label]
+            take = min(base[a.label], room)
+            if take > 0:
+                quota[a.label] += take
+                remaining -= take
+                progressed = True
+            if quota[a.label] >= a.n_instances:
+                eligible.remove(a)
+        if not progressed:
+            break
+
+    return {k: v for k, v in quota.items() if v > 0}
 
 
 def _get(url: str, *, https_only: bool = True,
@@ -151,47 +254,83 @@ def download_satlib(family_counts: dict[str, int], out_dir: Path,
                     *, https_only: bool = True) -> list:
     """Download real SATLIB instances. Returns a list of (data, family, name).
 
-    `family_counts` caps how many instances are taken per family, so a bench
-    run never pulls more than it needs. Unreachable archives are skipped with a
-    warning; an empty return simply means the generators supply everything.
+    `family_counts` caps how many instances are taken per family. Within a
+    family the quota is split by archive weight rather than evenly, so a
+    request for 400 random-3SAT instances is filled mostly from the hard
+    phase-transition sets rather than diluted across the easy ones.
+
+    Unreachable archives are skipped with a warning; an empty return simply
+    means the generators supply everything.
     """
     cache_dir = Path(out_dir) / "_cache"
     out: list = []
 
-    # Spread each family's quota evenly across the archives available for it.
-    # Draining the first archive would hand back an all-SAT corpus, but the
-    # UNSAT sets are exactly where CDCL solvers separate: a refutation has to
-    # be complete, so there is no lucky early exit to mask a weak solver.
-    by_family: dict[str, list[tuple[str, str, str]]] = {}
-    for family, path, sat_status, label in SATLIB_ARCHIVES:
-        by_family.setdefault(family, []).append((path, sat_status, label))
-
-    for family, archives in by_family.items():
+    for family in {a.family for a in SATLIB_ARCHIVES}:
         want = int(family_counts.get(family, 0))
         if want <= 0:
             continue
-        share, extra = divmod(want, len(archives))
-        for idx, (path, sat_status, label) in enumerate(archives):
-            quota = share + (1 if idx < extra else 0)
-            if quota <= 0:
+        pool = archives_for(family)
+        available = sum(a.n_instances for a in pool)
+        if want > available:
+            log.info("family %s: asked for %d, SATLIB holds %d; generators will "
+                     "cover the remaining %d", family, want, available, want - available)
+        quota = allocate(pool, want)
+
+        for archive in pool:
+            take = quota.get(archive.label, 0)
+            if take <= 0:
                 continue
-            url = f"{SATLIB_BASE}/{path}"
-            data = _cached_archive(url, cache_dir, https_only=https_only)
+            data = _cached_archive(f"{SATLIB_BASE}/{archive.path}", cache_dir,
+                                   https_only=https_only)
             if data is None:
-                log.warning("SATLIB archive unavailable, skipping: %s", label)
+                log.warning("SATLIB archive unavailable, skipping: %s", archive.label)
                 continue
-            members = _extract_cnfs(data, quota)
+            members = _extract_cnfs(data, take)
             if not members:
-                log.warning("SATLIB archive %s yielded no usable CNFs", label)
+                log.warning("SATLIB archive %s yielded no usable CNFs", archive.label)
                 continue
             for payload, name in members:
-                out.append((payload, family, f"satlib-{label}-{name}"))
-            log.info("SATLIB %s: %d instances (%s) for family %s",
-                     label, len(members), sat_status, family)
+                out.append((payload, family, f"satlib-{archive.label}-{name}"))
+            log.info("SATLIB %-22s %3d instances (%s, n=%d) -> %s",
+                     archive.label, len(members), archive.status, archive.nvars, family)
 
     if not out:
         log.warning("no SATLIB instances were downloaded; corpus will be "
                     "entirely generated (see dataset_summary.json warnings)")
+    return out
+
+
+def prefetch(out_dir: Path, *, https_only: bool = True,
+             progress=None) -> dict[str, str]:
+    """Download every archive into the cache without building a corpus.
+
+    Useful before working somewhere with no network: warm the cache here, copy
+    `<raw>/_cache/` to the target machine, and `bench` will run entirely
+    offline. Returns {label: status}.
+    """
+    cache_dir = Path(out_dir) / "_cache"
+    results: dict[str, str] = {}
+    for archive in SATLIB_ARCHIVES:
+        if progress:
+            progress(archive.label)
+        data = _cached_archive(f"{SATLIB_BASE}/{archive.path}", cache_dir,
+                               https_only=https_only)
+        if data is None:
+            results[archive.label] = "unreachable"
+            continue
+        members = _extract_cnfs(data, 10 ** 6)
+        results[archive.label] = (f"ok ({len(members)} instances)" if members
+                                  else "empty (no usable CNFs)")
+    return results
+
+
+def cache_status(out_dir: Path) -> dict[str, bool]:
+    """Which archives are already cached locally."""
+    cache_dir = Path(out_dir) / "_cache"
+    out: dict[str, bool] = {}
+    for archive in SATLIB_ARCHIVES:
+        key = hashlib.sha256(f"{SATLIB_BASE}/{archive.path}".encode()).hexdigest()[:16]
+        out[archive.label] = (cache_dir / f"{key}.tar.gz").exists()
     return out
 
 

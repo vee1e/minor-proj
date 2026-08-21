@@ -267,6 +267,39 @@ def write_report(cfg: dict, results: dict, ood: dict | None = None,
         L.append("- (no feature columns; ablation skipped)")
     L.append("")
 
+    L.append("### 8b. Feature-free GNN comparison (objective O6)")
+    L.append("")
+    ff = results.get("gnn_feature_free") or {}
+    if ff and "full" in ff and "none" in ff:
+        rows = [
+            ["designed node features", _fmt(ff.get("full"))],
+            ["feature-free (pure topology)", _fmt(ff.get("none"))],
+            ["difference", _fmt(ff.get("delta_par2"))],
+        ]
+        L += _table(["GNN variant", "best val PAR-2 (s)"], rows)
+        delta = ff.get("delta_par2")
+        if delta is not None:
+            if delta > 0:
+                L.append(f"Designed node features reduce validation PAR-2 by "
+                         f"{_fmt(delta)} s, so expert knowledge is contributing "
+                         f"beyond what message passing recovers from topology alone.")
+            elif delta < 0:
+                L.append(f"The feature-free variant is {_fmt(-delta)} s *better*, so the "
+                         f"designed node features are not earning their place and the "
+                         f"graph structure alone carries the signal.")
+            else:
+                L.append("No measurable difference between the two variants.")
+        L.append("")
+        L.append("Both variants are trained by `satsel train-gnn` on identical splits "
+                 "with identical seeds and architecture, so the gap is attributable to "
+                 "the node features alone. This is the feature-engineering-bottleneck "
+                 "question raised by Zhang et al. (2026), measured on our own data "
+                 "rather than cited.")
+    else:
+        L.append("- (no GNN trained, or the node-feature ablation was disabled; "
+                 "run `satsel train-gnn` to populate this)")
+    L.append("")
+
     # 9. OOD
     L.append("## 9. Out-of-distribution")
     L.append("")

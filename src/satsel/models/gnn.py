@@ -126,6 +126,15 @@ def _clause_positional_encoding(nclauses: int, dim: int = CLAUSE_PE_DIM) -> np.n
     return pe
 
 
+def _keep_columns(x: np.ndarray, keep: list[int]) -> np.ndarray:
+    """Zero every column except `keep`, preserving shape."""
+    out = np.zeros_like(x)
+    for c in keep:
+        if c < x.shape[1]:
+            out[:, c] = x[:, c]
+    return out
+
+
 def _lit_node(lit: int, nvars: int) -> int:
     """Map a DIMACS literal to a literal-node index.
 
@@ -135,8 +144,19 @@ def _lit_node(lit: int, nvars: int) -> int:
     return v if lit > 0 else nvars + v
 
 
-def cnf_to_hetero(cnf, nvars: int):
+def cnf_to_hetero(cnf, nvars: int, node_feats: str = "full"):
     """Build the tripartite HeteroData for one formula.
+
+    `node_feats` selects how much expert knowledge the model is given, which is
+    what the feature-free comparison in objective O6 turns on:
+
+      "full"       domain-designed features per node type (the default)
+      "structural" degree only; everything else zeroed
+      "none"       constant 1.0 -- the model sees pure topology and must learn
+                   everything from message passing alone
+
+    Dimensionality is identical in every mode, so a state dict trained under
+    one mode still loads under another and only the inputs differ.
 
     Returns a `torch_geometric.data.HeteroData` with `var`, `lit` and `clause`
     node stores and the four relations above.
@@ -201,6 +221,18 @@ def cnf_to_hetero(cnf, nvars: int):
         clause_x[:, 1] = clause_pos_frac
         clause_x[:, 2] = (clause_len <= 2).astype(np.float32)
         clause_x[:, 3:] = _clause_positional_encoding(nclauses)
+
+    if node_feats == "structural":
+        # Keep the degree signal only; zero the designed features.
+        var_x = _keep_columns(var_x, [0])
+        lit_x = _keep_columns(lit_x, [0])
+        clause_x = _keep_columns(clause_x, [0])
+    elif node_feats == "none":
+        var_x = np.ones_like(var_x)
+        lit_x = np.ones_like(lit_x)
+        clause_x = np.ones_like(clause_x)
+    elif node_feats != "full":
+        raise ValueError(f"unknown node_feats mode {node_feats!r}")
 
     data = HeteroData()
     data["var"].x = torch.from_numpy(var_x)
@@ -270,7 +302,7 @@ def _gnn_model(n_layers: int, n_out: int, hidden: int = 64):
     return GraSS()
 
 
-def _batch_from_rows(rows: list, device):
+def _batch_from_rows(rows: list, device, node_feats: str = "full"):
     """Build one batched HeteroData plus the per-row cost matrix."""
     torch = _torch()
     from torch_geometric.data import Batch
@@ -279,7 +311,7 @@ def _batch_from_rows(rows: list, device):
     costs = []
     for row in rows:
         cnf = _load_cnf(row)
-        graphs.append(cnf_to_hetero(cnf, cnf.nvars))
+        graphs.append(cnf_to_hetero(cnf, cnf.nvars, node_feats))
         costs.append([float(row[f"{s}_weight"]) for s in SOLVERS])
     batch = Batch.from_data_list(graphs).to(device)
     cost = torch.tensor(costs, dtype=torch.float, device=device)
@@ -343,40 +375,65 @@ def train_gnn(dataset, cfg: dict, seed: int, epochs: int = 40) -> dict:
     warnings: list[str] = [note] if note else []
 
     n_layers_choices = [int(x) for x in cfg.get("gnn_layer_ablation", [1, 2, 4])]
-    best_state, best_par2, best_layers = None, float("inf"), n_layers_choices[0]
+    # Objective O6 asks how the GNN compares against a feature-free approach.
+    # Running both here answers it directly and on identical splits: "full" is
+    # the expert-knowledge model, "none" sees pure topology. The gap between
+    # them is the value of the hand-designed node features, which is exactly
+    # the feature-engineering-bottleneck question Zhang et al. (2026) raise.
+    feats_choices = [str(x) for x in cfg.get("gnn_node_feats_ablation", ["full", "none"])]
+    best_state = None
+    best_par2 = float("inf")
+    best_layers = n_layers_choices[0]
+    best_feats = feats_choices[0]
     ablation: list[dict] = []
 
-    for n_layers in n_layers_choices:
-        torch.manual_seed(seed)
-        rng = np.random.default_rng(seed)
-        model = _gnn_model(n_layers, len(SOLVERS)).to(device)
-        opt = torch.optim.Adam(model.parameters(), lr=lr)
-        last_loss = float("nan")
-        for _epoch in range(epochs):
-            model.train()
-            for batch_rows in _minibatches(rows, batch_size, rng):
-                batch, cost = _batch_from_rows(batch_rows, device)
-                opt.zero_grad()
-                logits = model(batch.x_dict, batch.edge_index_dict,
-                               {t: batch[t].batch for t in NODE_TYPES})
-                p = torch.softmax(logits, dim=1)
-                loss = (p * cost).sum(dim=1).mean()
-                loss.backward()
-                opt.step()
-                last_loss = float(loss.detach().cpu())
-        vp, hist = _val_par2(model, val, cap, device)
-        ablation.append({"n_layers": n_layers, "val_par2": vp,
-                         "final_train_loss": last_loss, "choice_hist": hist})
-        if vp < best_par2:
-            best_par2, best_layers = vp, n_layers
-            best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+    for node_feats in feats_choices:
+        for n_layers in n_layers_choices:
+            torch.manual_seed(seed)
+            rng = np.random.default_rng(seed)
+            model = _gnn_model(n_layers, len(SOLVERS)).to(device)
+            opt = torch.optim.Adam(model.parameters(), lr=lr)
+            last_loss = float("nan")
+            for _epoch in range(epochs):
+                model.train()
+                for batch_rows in _minibatches(rows, batch_size, rng):
+                    batch, cost = _batch_from_rows(batch_rows, device, node_feats)
+                    opt.zero_grad()
+                    logits = model(batch.x_dict, batch.edge_index_dict,
+                                   {t: batch[t].batch for t in NODE_TYPES})
+                    p = torch.softmax(logits, dim=1)
+                    loss = (p * cost).sum(dim=1).mean()
+                    loss.backward()
+                    opt.step()
+                    last_loss = float(loss.detach().cpu())
+            vp, hist = _val_par2(model, val, cap, device, node_feats)
+            ablation.append({"node_feats": node_feats, "n_layers": n_layers,
+                             "val_par2": vp, "final_train_loss": last_loss,
+                             "choice_hist": hist})
+            if vp < best_par2:
+                best_par2, best_layers, best_feats = vp, n_layers, node_feats
+                best_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
 
     if best_state is None:
         raise ValueError("GNN training produced no usable model")
 
+    # Headline comparison: best configuration per node-feature mode.
+    feature_free: dict[str, float] = {}
+    for mode in feats_choices:
+        scores = [e["val_par2"] for e in ablation
+                  if e["node_feats"] == mode and np.isfinite(e["val_par2"])]
+        if scores:
+            feature_free[mode] = float(min(scores))
+    if "full" in feature_free and "none" in feature_free:
+        delta = feature_free["none"] - feature_free["full"]
+        warnings.append(
+            f"node features change validation PAR-2 by {delta:+.4f}s "
+            f"(full={feature_free['full']:.4f}s, feature-free={feature_free['none']:.4f}s)")
+
     max_share = 0.0
     for entry in ablation:
-        if entry["n_layers"] == best_layers and entry["choice_hist"]:
+        if (entry["n_layers"] == best_layers
+                and entry.get("node_feats") == best_feats and entry["choice_hist"]):
             total = sum(entry["choice_hist"].values()) or 1
             max_share = max(entry["choice_hist"].values()) / total
     if max_share > 0.9:
@@ -390,6 +447,7 @@ def train_gnn(dataset, cfg: dict, seed: int, epochs: int = 40) -> dict:
         "model_state": best_state,
         "architecture": "grass-hetero-tripartite",
         "n_layers": best_layers,
+        "node_feats": best_feats,
         "hidden": 64,
         "solver_list": list(SOLVERS),
         "in_dims": dict(IN_DIMS),
@@ -400,14 +458,17 @@ def train_gnn(dataset, cfg: dict, seed: int, epochs: int = 40) -> dict:
         "device_trained_on": str(device),
         "n_train": int(len(rows)),
         "layer_ablation": ablation,
+        "feature_free_comparison": feature_free,
         "warnings": warnings,
     }, out_dir / "gnn.pt")
     return {"val_par2": float(best_par2), "n_layers": best_layers,
-            "device": describe_device(device), "n_train": len(rows),
-            "layer_ablation": ablation, "warnings": warnings}
+            "node_feats": best_feats, "device": describe_device(device),
+            "n_train": len(rows), "layer_ablation": ablation,
+            "feature_free_comparison": feature_free, "warnings": warnings}
 
 
-def _val_par2(model, val, cap: int, device) -> tuple[float, dict]:
+def _val_par2(model, val, cap: int, device,
+              node_feats: str = "full") -> tuple[float, dict]:
     """Validation PAR-2 plus the histogram of solvers the model chose."""
     torch = _torch()
     if val.empty:
@@ -420,7 +481,7 @@ def _val_par2(model, val, cap: int, device) -> tuple[float, dict]:
             if row["nvars"] + row["nclauses"] > cap:
                 continue
             cnf = _load_cnf(row)
-            batch, _ = _batch_from_rows([row.to_dict()], device)
+            batch, _ = _batch_from_rows([row.to_dict()], device, node_feats)
             logits = model(batch.x_dict, batch.edge_index_dict,
                            {t: batch[t].batch for t in NODE_TYPES})
             pred = SOLVERS[int(torch.argmax(logits, dim=1)[0])]
@@ -446,7 +507,8 @@ def predict_gnn(model_state: dict, cnf, nvars: int, solver_list) -> tuple[str, f
     model.to(device)
     model.eval()
 
-    batch = Batch.from_data_list([cnf_to_hetero(cnf, nvars)]).to(device)
+    node_feats = str(model_state.get("node_feats", "full"))
+    batch = Batch.from_data_list([cnf_to_hetero(cnf, nvars, node_feats)]).to(device)
     with torch.no_grad():
         logits = model(batch.x_dict, batch.edge_index_dict,
                        {t: batch[t].batch for t in NODE_TYPES})

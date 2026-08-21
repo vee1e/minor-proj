@@ -3,7 +3,7 @@
 # documented deviations (see EVAL_PROTOCOL.md §9).
 
 schema_version: "1.0"
-feature_schema_version: "1.0"
+feature_schema_version: "1.1"   # 1.1: in-process probe with DPLL search-space counters
 
 # ---- Timeouts (seconds) ----
 tau_screen: 30        # screening run budget (P1)
@@ -42,6 +42,7 @@ label_min_spread: 1.5         # informative = max_s T(i,s)/T(i,s*) >= 1.5 (train
 # ---- GNN scope ----
 gnn_node_cap: 500000          # n + m <= cap, else route to classical path
 gnn_layer_ablation: [1, 2, 4]
+gnn_node_feats_ablation: ["full", "none"]   # O6: expert-knowledge vs feature-free GNN
 use_positional_encodings: true
 
 # ---- Cost weighting ----

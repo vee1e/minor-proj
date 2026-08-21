@@ -148,3 +148,120 @@ def solve_in_process(
             slv.delete()
         except Exception:  # noqa: BLE001
             pass
+
+
+# Solvers whose pysat bindings implement interrupt() / solve_limited(). Verified
+# empirically against python-sat 1.9.dev15: CaDiCaL and Lingeling raise
+# NotImplementedError("Limited solve is currently unsupported"), and a CaDiCaL
+# probe given a 0.15 s budget ran for 5.8 s because nothing could stop it. Only
+# solvers on this list may be used for an in-process, time-budgeted probe.
+INTERRUPTIBLE_SOLVERS = ("minisat22", "glucose4", "maplesat", "maplecm")
+
+
+@dataclass(frozen=True)
+class ProbeOutcome:
+    """Result of a short, budgeted, in-process probe run."""
+
+    ok: bool
+    solved: bool
+    satisfiable: bool | None
+    runtime_s: float
+    interrupted: bool
+    stats: dict[str, int]
+    message: str = ""
+
+
+def supports_interrupt(name: str) -> bool:
+    return name in INTERRUPTIBLE_SOLVERS
+
+
+def solve_probe(
+    clauses: tuple[tuple[int, ...], ...],
+    nvars: int,
+    solver: str,
+    budget_s: float,
+    *,
+    seed: int = 0,
+) -> ProbeOutcome:
+    """Run a short probe in this process, stopped by the solver's own interrupt.
+
+    Used only for feature extraction, never for profiling. Profiling keeps its
+    subprocess-per-run design because a wall-clock SIGKILL is the only thing
+    that reliably stops a solver that has stopped cooperating; a probe is
+    different, because the budget is small and the solver is asked to stop
+    rather than made to.
+
+    Doing this in-process removes ~0.45 s per instance of Python interpreter
+    startup plus a temp-file round trip, which on easy formulas exceeded the
+    solving time it was meant to measure and broke the tau_feat budget the
+    evaluation protocol promises.
+
+    Returns ok=False (rather than raising) if the solver cannot be interrupted,
+    so the caller can mark the probe group missing and carry on.
+    """
+    if not supports_interrupt(solver):
+        return ProbeOutcome(
+            ok=False, solved=False, satisfiable=None, runtime_s=0.0,
+            interrupted=False, stats={},
+            message=f"{solver} does not support interrupt; refusing to probe")
+
+    from threading import Timer
+
+    slv = None
+    timer = None
+    try:
+        try:
+            slv = Solver(name=solver, bootstrap_with=[list(c) for c in clauses],
+                         use_timer=True)
+        except TypeError:
+            slv = Solver(name=solver, bootstrap_with=[list(c) for c in clauses])
+
+        fired = {"hit": False}
+
+        def _stop() -> None:
+            fired["hit"] = True
+            try:
+                slv.interrupt()
+            except Exception:  # noqa: BLE001  # nothing useful to do from a timer thread
+                pass
+
+        timer = Timer(max(budget_s, 0.01), _stop)
+        timer.daemon = True
+        timer.start()
+
+        start = time.perf_counter()
+        res = slv.solve_limited(expect_interrupt=True)
+        elapsed = time.perf_counter() - start
+
+        timer.cancel()
+        try:
+            slv.clear_interrupt()
+        except Exception:  # noqa: BLE001
+            pass
+
+        stats: dict[str, int] = {}
+        try:
+            stats = {str(k): int(v) for k, v in dict(slv.accum_stats()).items()}
+        except Exception:  # noqa: BLE001  # not every build reports statistics
+            stats = {}
+
+        return ProbeOutcome(
+            ok=True,
+            solved=res is not None,
+            satisfiable=(None if res is None else bool(res)),
+            runtime_s=min(elapsed, budget_s) if res is None else elapsed,
+            interrupted=bool(fired["hit"] and res is None),
+            stats=stats,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ProbeOutcome(ok=False, solved=False, satisfiable=None, runtime_s=0.0,
+                            interrupted=False, stats={},
+                            message=f"{type(exc).__name__}: {exc}")
+    finally:
+        if timer is not None:
+            timer.cancel()
+        if slv is not None:
+            try:
+                slv.delete()
+            except Exception:  # noqa: BLE001
+                pass

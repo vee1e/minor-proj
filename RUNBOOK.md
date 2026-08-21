@@ -81,10 +81,104 @@ Everything `satsel all` does can be run separately. Run them in this order becau
 ### 3.1 bench: get the formulas
 
 ```
-uv run satsel bench
+uv run satsel bench            # full corpus
+uv run satsel bench --small    # pilot corpus (~540 formulas)
+uv run satsel bench --tiny     # CI smoke only
 ```
 
-Tries to download real benchmark instances from SATLIB and GBD. Those servers are often unreachable, and one old host is known to be hijacked, so the downloader is a bounded probe: if it gets nothing it logs a warning and the project's own generators fill every family to its target. The result is always 2300 formulas (200 of them held out as the out-of-distribution family).
+This step assembles the corpus from two sources: **real benchmark instances
+downloaded from SATLIB**, topped up by the project's own seeded generators for
+the families SATLIB does not cover.
+
+#### What gets downloaded
+
+Instances come from the canonical SATLIB mirror at UBC:
+
+```
+https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/
+```
+
+To see exactly what is on offer, what it holds and what is already on disk:
+
+```
+uv run satsel sources             # the table below, plus cache state
+uv run satsel sources --probe     # also check each archive is reachable now
+uv run satsel sources --fetch     # download every archive into the cache
+```
+
+| archive | family | kind | instances | vars | weight |
+| --- | --- | --- | ---: | ---: | ---: |
+| uf250-1065 | random3sat | sat | 100 | 250 | 5 |
+| uuf250-1065 | random3sat | **unsat** | 100 | 250 | 5 |
+| uf225-960 | random3sat | sat | 100 | 225 | 4 |
+| uuf225-960 | random3sat | **unsat** | 100 | 225 | 4 |
+| uf200-860 | random3sat | sat | 100 | 200 | 3 |
+| uuf200-860 | random3sat | **unsat** | 99 | 200 | 3 |
+| uf175-753 | random3sat | sat | 100 | 175 | 1 |
+| uuf175-753 | random3sat | **unsat** | 100 | 175 | 1 |
+| uf150-645 | random3sat | sat | 100 | 150 | 1 |
+| uuf150-645 | random3sat | **unsat** | 100 | 150 | 1 |
+| CBS_k3_n100_m403_b10 | random3sat | sat | 1000 | 100 | 1 |
+| flat200-479 | colouring | sat | 100 | 600 | 3 |
+| flat125-301 | colouring | sat | 100 | 375 | 2 |
+| logistics | planning | sat | 4 | 828 | 1 |
+| blocksworld | planning | sat | 7 | 459 | 1 |
+
+**2,210 real instances are available in total** — enough on its own to meet the
+N >= 2,000 target in the synopsis. The generators then only cover what SATLIB
+has no equivalent for: `random3sat_large`, `industrial`, `crypto`,
+`scheduling`, and the held-out `ood_scheduling` family.
+
+#### How the quota is split
+
+A family's requested count is divided across its archives **by weight**, not
+evenly. Weight reflects how much an archive tells you about solver choice:
+
+- `uf/uuf250` sit exactly on the 4.26 satisfiability phase transition, where
+  instances are hardest and solvers disagree most. Highest weight.
+- `uf/uuf150` and `CBS` solve in milliseconds on every solver in the portfolio,
+  so they contribute almost no signal about which solver to pick. Lowest weight.
+
+The `uf` (satisfiable) and `uuf` (unsatisfiable) sets at each size carry
+**equal** weight on purpose. UNSAT instances are where CDCL solvers separate
+most, because proving no solution exists means exhausting the search space —
+there is no lucky early exit to flatter a weak solver. Allocation uses
+largest-remainder apportionment so that balance is exact rather than drifting.
+
+#### Caching, and running offline
+
+Every archive is downloaded once and cached under `artifacts/raw/_cache/`.
+Re-running `bench` reuses the cache and does no network I/O.
+
+If the machine you profile on has no internet (common in a lab), warm the cache
+somewhere that does, then copy the folder across:
+
+```
+uv run satsel sources --fetch          # on a networked machine (~4 MB total)
+# copy artifacts/raw/_cache/ to the same path on the target machine
+uv run satsel bench                    # runs fully offline
+```
+
+#### Checking what you actually got
+
+Provenance is recorded per formula, so this is never a guess. The manifest
+carries a `source` column, and `dataset_summary.json` reports
+`source_distribution`, `n_real_instances`, `n_generated_instances` and
+`real_instance_share`.
+
+```
+uv run satsel bench --small
+python -c "import pandas as pd; d=pd.read_parquet('artifacts/manifests/formulas.parquet'); print(d['source'].value_counts())"
+```
+
+If nothing downloaded, `provenance_warnings` says so in plain words rather than
+letting a fully synthetic corpus be written up as an open benchmark collection.
+
+**Want a higher real share?** SATLIB only covers three of the eight families, so
+the pilot lands near a third real. Raising the counts for `random3sat`,
+`colouring` and `planning` (SATLIB holds 1,999 random-3SAT instances alone)
+pulls in more real data — at the cost of changing the family balance of the
+study, which is a design decision worth making deliberately.
 
 ### 3.2 features: turn formulas into numbers
 

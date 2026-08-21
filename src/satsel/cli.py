@@ -304,6 +304,72 @@ def _cmd_oracle(args) -> int:
     return 0
 
 
+def _cmd_sources(args) -> int:
+    """List the benchmark archives, what they hold, and what is cached."""
+    from satsel.bench import download as dl
+
+    cfg = load_config(getattr(args, "config", None))
+    raw = Path(cfg["paths"]["raw"])
+
+    if args.fetch:
+        target = raw / "_cache"
+        print(f"Prefetching {len(dl.SATLIB_ARCHIVES)} archives into {target} ...")
+        print("The cache is reusable: copy that folder to an offline machine")
+        print("and `satsel bench` will run there without any network access.")
+        print()
+
+        def _tick(label: str) -> None:
+            print(f"  fetching {label} ...", flush=True)
+
+        results = dl.prefetch(raw, progress=_tick)
+        print()
+        bad = [k for k, v in results.items() if not v.startswith("ok")]
+        for label, status in results.items():
+            mark = "ok  " if status.startswith("ok") else "FAIL"
+            print(f"  {mark}  {label:24s} {status}")
+        print()
+        print(f"{len(results) - len(bad)}/{len(results)} archives cached.")
+        return 1 if bad else 0
+
+    cached = dl.cache_status(raw)
+    probe: dict[str, bool] = {}
+    if args.probe:
+        print("probing reachability ...")
+        print()
+        for a in dl.SATLIB_ARCHIVES:
+            data = dl._get(f"{dl.SATLIB_BASE}/{a.path}", timeout=15.0)
+            probe[a.label] = data is not None
+
+    print(f"SATLIB archives  (source: {dl.SATLIB_BASE})")
+    print()
+    head = (f"  {'archive':24s} {'family':12s} {'kind':6s} {'n':>5s} "
+            f"{'vars':>5s} {'wt':>3s}  cached")
+    if args.probe:
+        head += "  online"
+    print(head)
+    print("  " + "-" * (len(head) - 2))
+    for a in dl.SATLIB_ARCHIVES:
+        mark = "yes" if cached[a.label] else "-"
+        row = (f"  {a.label:24s} {a.family:12s} {a.status:6s} "
+               f"{a.n_instances:5d} {a.nvars:5d} {a.weight:3d}  {mark:6s}")
+        if args.probe:
+            row += f"  {'yes' if probe.get(a.label) else 'NO':6s}"
+        print(row)
+
+    print()
+    for fam in sorted({a.family for a in dl.SATLIB_ARCHIVES}):
+        print(f"  {fam:12s} {dl.total_available(fam):5d} real instances available")
+    print(f"  {'TOTAL':12s} {dl.total_available():5d}")
+    print()
+    print("  `satsel bench` downloads these automatically. A family's quota is")
+    print("  split by weight, so hard phase-transition sets are preferred over")
+    print("  easy ones. Families SATLIB does not cover (industrial, crypto,")
+    print("  ood_scheduling) come from the seeded generators.")
+    print()
+    print("  satsel sources --probe    check every archive is reachable")
+    print("  satsel sources --fetch    download them all into the cache now")
+    return 0
+
 def _cmd_diagnose(args) -> int:
     """Read-only health check of every artifact. Never trains anything."""
     cfg = load_config()
@@ -407,6 +473,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--input", required=True)
     p.add_argument("--timeout", type=float, default=300.0)
     p.set_defaults(func=_cmd_oracle)
+
+    p = sub.add_parser("sources",
+                       help="list benchmark archives, instance counts and cache state")
+    p.add_argument("--probe", action="store_true",
+                   help="check that each archive is reachable right now")
+    p.add_argument("--fetch", action="store_true",
+                   help="download every archive into the local cache (works offline after)")
+    p.set_defaults(func=_cmd_sources)
 
     p = sub.add_parser("diagnose",
                        help="print dataset warnings, label distribution, model "

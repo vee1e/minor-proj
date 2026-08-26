@@ -29,6 +29,8 @@ from satsel.core.schemas import (
 )
 from satsel.core.solvers import SOLVER_VERSION, solve_in_process
 
+DEFAULT_FALLBACK = "cadical153"
+
 _MODEL_CACHE: dict[str, object] = {}
 
 
@@ -86,7 +88,7 @@ def _selector_pick(model_dir: Path, cnf, features: dict, gnn_cap: int
     theta_info = _theta(model_dir)
     theta = float(theta_info.get("theta", 1.0))
     fallback = theta_info.get("fallback_solver") or portfolio.get(
-        "best_average_solver", "kissat404")
+        "best_average_solver", DEFAULT_FALLBACK)
 
     gnn = _gnn_state(model_dir)
     if gnn is not None and cnf.nvars + cnf.nclauses <= gnn_cap:
@@ -155,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         if out.status in (RUN_CRASH, RUN_ERROR) and not fallback_used:
             # worst case must be no worse than the fallback
             fb = _theta(Path(args.model_dir)).get("fallback_solver") or portfolio.get(
-                "best_average_solver", "kissat404")
+                "best_average_solver", DEFAULT_FALLBACK)
             if fb != solver:
                 out = solve_in_process(cnf.clauses, cnf.nvars, fb, args.timeout, seed=0)
                 solver = fb

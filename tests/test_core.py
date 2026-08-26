@@ -3,7 +3,7 @@
 import pytest
 
 from satsel.core.config import load_config
-from satsel.core.dimacs import Cnf, DimacsError, canonical_hash, parse_cnf
+from satsel.core.dimacs import Cnf, DimacsError, parse_cnf
 from satsel.core.proc import run_subprocess
 
 

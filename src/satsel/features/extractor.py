@@ -1,13 +1,14 @@
 """Feature extraction: turn a CNF into a fixed-size numeric vector.
 
 Groups are extracted cheapest-first so a hard time budget can be respected:
-syntactic (O(n+m)), then graph (near-linear), then a short solver probe (run in
-a killable subprocess). Any group that would exceed the remaining budget is
-marked missing.
+syntactic (O(n+m)), then graph (near-linear), then a short in-process solver
+probe stopped by the solver's own interrupt(). Any group that would exceed the
+remaining budget is marked missing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 import statistics
 import time
@@ -18,10 +19,26 @@ from pathlib import Path
 import pandas as pd
 
 from satsel.core.dimacs import Cnf
-from satsel.core.schemas import RUN_SOLVED
 
-FEATURE_SCHEMA_VERSION = "1.0"
+FEATURE_SCHEMA_VERSION = "1.1"
 PROBE_BUDGET_S = 0.2
+# Measured cost of the graph group per literal (pure Python, near-linear in
+# total literals): ~1.4e-6 s/literal on this machine, kept at 3e-6 for
+# headroom. Used only to decide whether the group fits in the budget.
+GRAPH_S_PER_LITERAL = 3.0e-6
+# interrupt() sets a flag the solver checks periodically, so it does not stop
+# instantly. Measured overshoot is a near-constant ~15 ms across budgets from
+# 20 ms to 200 ms (solver construction + interrupt latency + teardown), so the
+# probe is given a margin plus only a fraction of the time remaining. The
+# budget is therefore respected within roughly one interrupt interval, which is
+# the strongest guarantee available without killing the process.
+PROBE_STOP_MARGIN_S = 0.02
+PROBE_BUDGET_FRACTION = 0.8
+# MiniSat: one of the few pysat backends whose bindings implement interrupt(),
+# which an in-process budgeted probe depends on. CaDiCaL and Lingeling raise
+# NotImplementedError and would run unbounded; kissat404 segfaults in-process
+# on some Windows builds. See core.solvers.INTERRUPTIBLE_SOLVERS.
+PROBE_SOLVER = "minisat22"
 
 
 @dataclass(frozen=True)
@@ -229,44 +246,58 @@ def _components(nvars: int, pairs: Counter) -> tuple[int, int]:
     return len(sizes), max(sizes.values()) if sizes else 0
 
 
+PROBE_FEATURES = (
+    "probe_runtime_s", "probe_solved", "probe_satisfiable",
+    "probe_conflicts_log", "probe_decisions_log", "probe_propagations_log",
+    "probe_restarts_log", "probe_props_per_dec", "probe_confl_per_dec",
+    "probe_decisions_per_var",
+)
+
+
 def _probe(cnf: Cnf, budget_s: float, seed: int) -> dict[str, float]:
-    """Short solver probe run in a killable subprocess (wall-clock safe)."""
-    import json
-    import sys
+    """Short DPLL probe, run in this process under the solver's own interrupt.
 
-    from satsel.core.proc import run_subprocess
+    This used to write the formula to a temp file and spawn
+    `python -m satsel.profiling.worker`, costing roughly 0.45 s of interpreter
+    startup and re-parsing per instance. On an easy formula that is several
+    hundred times the solve time it was measuring, and it broke the
+    tau_feat <= 5% budget the evaluation protocol promises. Running in-process
+    reduces it to the probe budget itself.
 
-    f: dict[str, float] = {
-        "probe_runtime_s": 0.0,
-        "probe_solved": 0.0,
-        "probe_satisfiable": -1.0,
-    }
-    import tempfile
+    Beyond timing, the solver's own counters give the search-space statistics
+    the feature taxonomy asks for (Nudelman et al.: DPLL probe depth and
+    unit-propagation behaviour). Counts are log-compressed because they span
+    orders of magnitude across families, and the ratios are scale-free so they
+    stay comparable between a 100-variable and a 100,000-variable formula.
+    """
+    from satsel.core.solvers import solve_probe
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".cnf", delete=False)
-    try:
-        tmp.write(cnf.to_dimacs())
-        tmp.close()
-        argv = [sys.executable, "-m", "satsel.profiling.worker",
-                "--cnf", tmp.name, "--solver", "kissat404",
-                "--timeout", str(budget_s), "--seed", str(seed)]
-        res = run_subprocess(argv, timeout_s=budget_s + 1.0)
-        payload = json.loads(res.stdout.decode().strip())
-        if payload.get("ok"):
-            f["probe_runtime_s"] = min(float(payload.get("runtime_s", 0.0)), budget_s)
-            if payload.get("status") == RUN_SOLVED:
-                f["probe_solved"] = 1.0
-                sat = payload.get("satisfiable")
-                f["probe_satisfiable"] = 1.0 if sat is True else 0.0
-    except Exception:  # noqa: BLE001
-        pass
-    finally:
-        try:
-            tmp.close()
-        except Exception:  # noqa: BLE001
-            pass
+    out = solve_probe(cnf.clauses, cnf.nvars, PROBE_SOLVER, budget_s, seed=seed)
+    if not out.ok:
+        # A failed probe must look missing, not like a real run whose counters
+        # happened to be zero; otherwise training learns a fake pattern.
+        return {}
+
+    f: dict[str, float] = {}
+    f["probe_runtime_s"] = float(min(out.runtime_s, budget_s))
+    if out.solved:
+        f["probe_solved"] = 1.0
+        f["probe_satisfiable"] = 1.0 if out.satisfiable else 0.0
+
+    st = out.stats
+    conflicts = float(st.get("conflicts", 0))
+    decisions = float(st.get("decisions", 0))
+    propagations = float(st.get("propagations", 0))
+    restarts = float(st.get("restarts", 0))
+
+    f["probe_conflicts_log"] = math.log1p(max(conflicts, 0.0))
+    f["probe_decisions_log"] = math.log1p(max(decisions, 0.0))
+    f["probe_propagations_log"] = math.log1p(max(propagations, 0.0))
+    f["probe_restarts_log"] = math.log1p(max(restarts, 0.0))
+    f["probe_props_per_dec"] = propagations / max(decisions, 1.0)
+    f["probe_confl_per_dec"] = conflicts / max(decisions, 1.0)
+    f["probe_decisions_per_var"] = decisions / max(float(cnf.nvars), 1.0)
     return f
-
 
 def _group_names_for(cnf: Cnf) -> dict[str, list[str]]:
     clens = [len(cl) for cl in cnf.clauses]
@@ -278,7 +309,7 @@ def _group_names_for(cnf: Cnf) -> dict[str, list[str]]:
     return {
         "syntactic": list(_syntactic(cnf, clens, var_occ)),
         "graph": list(_graph(cnf, clens, var_occ)),
-        "probe": ["probe_runtime_s", "probe_solved", "probe_satisfiable"],
+        "probe": list(PROBE_FEATURES),
     }
 
 
@@ -286,13 +317,19 @@ _GROUP_NAMES: dict[str, list[str]] = _group_names_for(
     Cnf(nvars=3, nclauses=2, clauses=((1, 2, 3), (-1, 3)), family="", source=""))
 
 
-def extract_features(cnf: Cnf, budget_s: float, seed: int = 0) -> FeatureVector:
+def extract_features(cnf: Cnf, budget_s: float, seed: int = 0, *,
+                     enable_probe: bool = True) -> FeatureVector:
     """Extract features within a hard budget (cheapest groups first).
 
     Every feature in the fixed schema always appears; a group skipped by the
-    budget contributes its features with value 0.0 and missing=True.
+    budget (or by `enable_probe=False`) contributes its features with value
+    0.0 and missing=True.
+
+    Timing uses perf_counter, not monotonic: monotonic has a ~15.6 ms
+    resolution on Windows, which is coarse enough that a 200 ms budget was
+    being computed from an elapsed time that frequently read as zero.
     """
-    t0 = time.monotonic()
+    t0 = time.perf_counter()
     clens = [len(cl) for cl in cnf.clauses]
     var_occ = [0] * (cnf.nvars + 1)
     for cl in cnf.clauses:
@@ -302,11 +339,26 @@ def extract_features(cnf: Cnf, budget_s: float, seed: int = 0) -> FeatureVector:
 
     ran_syntactic = True
     syn = _syntactic(cnf, clens, var_occ)
-    ran_graph = time.monotonic() - t0 < budget_s
+
+    # Groups are atomic: the budget gates whether a group is *entered*, because
+    # a half-computed group yields no usable features. So entry needs a cost
+    # estimate, not just "is there time left" -- the graph pass is near-linear
+    # in total literals, and entering it with 5 ms left used to blow the budget
+    # by 60 ms on a 250-variable formula. GRAPH_S_PER_LITERAL is measured; the
+    # 2x headroom covers slower machines.
+    n_literals = sum(clens)
+    elapsed = time.perf_counter() - t0
+    predicted_graph_s = GRAPH_S_PER_LITERAL * max(n_literals, 1) * 2.0
+    ran_graph = elapsed + predicted_graph_s <= budget_s
     graph = _graph(cnf, clens, var_occ) if ran_graph else {}
-    probe_budget = min(PROBE_BUDGET_S, max(0.0, budget_s - (time.monotonic() - t0)))
-    ran_probe = probe_budget >= 0.05
+    remaining = budget_s - (time.perf_counter() - t0)
+    probe_budget = min(PROBE_BUDGET_S,
+                       max(0.0, remaining * PROBE_BUDGET_FRACTION - PROBE_STOP_MARGIN_S))
+    ran_probe = enable_probe and probe_budget >= 0.02
     probe = _probe(cnf, probe_budget, seed) if ran_probe else {}
+    if ran_probe and not probe:
+        # probe failed (non-interruptible solver or exception): mark missing
+        ran_probe = False
 
     names: list[str] = []
     values: list[float] = []
@@ -324,7 +376,7 @@ def extract_features(cnf: Cnf, budget_s: float, seed: int = 0) -> FeatureVector:
                 values.append(0.0)
                 missing.append(True)
     return FeatureVector(values=tuple(values), names=tuple(names),
-                         missing=tuple(missing), cost_s=time.monotonic() - t0)
+                         missing=tuple(missing), cost_s=time.perf_counter() - t0)
 
 
 FEATURE_NAMES: tuple[str, ...] = tuple(
@@ -333,13 +385,20 @@ FEATURE_NAMES: tuple[str, ...] = tuple(
 FEATURE_GROUPS: dict[str, list[str]] = {k: list(v) for k, v in _GROUP_NAMES.items()}
 
 
-def extract_one(cnf: Cnf, budget_s: float, seed: int = 0) -> dict:
-    fv = extract_features(cnf, budget_s, seed)
+def extract_one(cnf: Cnf, budget_s: float, seed: int = 0, *,
+                enable_probe: bool = True) -> dict:
+    fv = extract_features(cnf, budget_s, seed, enable_probe=enable_probe)
     out = {"formula_id": cnf.name, "feat_cost_s": fv.cost_s,
            "missing_frac": sum(fv.missing) / max(len(fv.missing), 1)}
     for name, val, miss in zip(fv.names, fv.values, fv.missing, strict=True):
         out[f"f_{name}"] = 0.0 if miss else val
     return out
+
+
+def _stable_seed(formula_id: str) -> int:
+    """Stable per-formula seed. str.__hash__ is salted per process, so it
+    would give each pool worker a different seed and differ across reruns."""
+    return int(hashlib.md5(formula_id.encode()).hexdigest()[:8], 16)
 
 
 def _extract_row_worker(args) -> dict:
@@ -348,12 +407,9 @@ def _extract_row_worker(args) -> dict:
     row, budget, enable_probe = args
     c = parse_cnf(Path(row["path"]).read_bytes())
     c.name = row["formula_id"]
-    rec = extract_one(c, budget, seed=int(row["formula_id"].__hash__() % (2**31)))
+    rec = extract_one(c, budget, seed=_stable_seed(row["formula_id"]),
+                      enable_probe=enable_probe)
     rec["formula_id"] = row["formula_id"]
-    if not enable_probe:
-        for k in list(rec):
-            if k.startswith("f_probe_"):
-                rec[k] = 0.0
     return rec
 
 
@@ -361,6 +417,7 @@ def batch_extract(cfg: dict, manifest_path: str | Path, workers: int = 4,
                   enable_probe: bool = True) -> None:
     """Extract features for every formula in the manifest; write parquet +
     schema json into cfg['paths']['features']."""
+    import json
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     manifest = Path(manifest_path)
@@ -368,8 +425,21 @@ def batch_extract(cfg: dict, manifest_path: str | Path, workers: int = 4,
     out_dir = Path(cfg["paths"]["features"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    budget = max(float(cfg.get("feat_budget_frac", 0.05)) * 0.5,
-                 float(cfg.get("feat_budget_floor_s", 0.20)))
+    # Same budget formula the oracle uses at inference time, so training and
+    # serving features are extracted under identical conditions. The previous
+    # `frac * 0.5` here disagreed with feat_budget_s whenever the portfolio's
+    # mean best-solver median exceeded 4 s.
+    from satsel.core.config import feat_budget_s
+
+    portfolio_path = Path(cfg["paths"]["models"]) / "portfolio.json"
+    mean_best = 0.5
+    try:
+        if portfolio_path.exists():
+            mean_best = float(json.loads(portfolio_path.read_text())
+                              .get("mean_best_solver_median", 0.5))
+    except Exception:  # noqa: BLE001  # fall back to the default mean
+        pass
+    budget = feat_budget_s(cfg, mean_best)
 
     args = [(r, budget, enable_probe) for r in df.to_dict("records")]
     records: list[dict] = []
@@ -387,6 +457,5 @@ def batch_extract(cfg: dict, manifest_path: str | Path, workers: int = 4,
         "feature_names": list(FEATURE_NAMES),
         "feature_groups": {k: v for k, v in FEATURE_GROUPS.items()},
     }
-    import json
 
     (out_dir / "feature_schema.json").write_text(json.dumps(schema, indent=2))

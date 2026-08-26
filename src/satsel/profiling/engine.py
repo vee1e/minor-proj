@@ -23,37 +23,34 @@ from satsel.core.proc import ProcResult, run_subprocess
 from satsel.core.schemas import RUN_CRASH, RUN_ERROR, RUN_SOLVED, RUN_TIMEOUT
 from satsel.core.solvers import ALLOWED_SOLVERS
 
-PRESOLVE_SOLVER = "kissat404"
+PRESOLVE_SOLVER = "cadical153"  # overridable via cfg["presolve_solver"]
 
 
 def _worker_cmd(worker: Path) -> list[str]:
     return [sys.executable, "-m", "satsel.profiling.worker"]
 
 
-def run_one(cnf_path: str, solver: str, timeout_s: float, run_idx: int,
-            formula_id: str, seed: int = 0) -> dict[str, Any]:
-    """Run one (formula, solver) in a subprocess; return a run record dict."""
-    argv = _worker_cmd(Path("unused")) + [
-        "--cnf", cnf_path, "--solver", solver, "--timeout", str(timeout_s),
-        "--seed", str(seed), "--formula-id", formula_id,
-    ]
-    res: ProcResult = run_subprocess(argv, timeout_s=timeout_s + 5.0)
+def _parse_run_payload(payload: dict[str, Any], solver: str, timeout_s: float,
+                       run_idx: int, formula_id: str, res: ProcResult,
+                       timed_out: bool) -> dict[str, Any]:
+    """Normalise one worker JSON object into a run record dict."""
     status = RUN_ERROR
     runtime_s = float("nan")
     message = ""
     satisfiable = None
-    try:
-        payload = json.loads(res.stdout.decode().strip())
-        if payload.get("ok"):
-            status = payload["status"]
-            runtime_s = float(payload["runtime_s"])
-            message = payload.get("message", "")
-            satisfiable = payload.get("satisfiable")
-    except Exception as exc:  # noqa: BLE001
-        message = f"bad worker output: {exc}"
-    if res.timed_out or status == RUN_ERROR and res.returncode == -9:
+    load_s = None
+    solve_cpu_s = None
+    if payload and payload.get("ok"):
+        status = payload["status"]
+        runtime_s = float(payload["runtime_s"])
+        message = payload.get("message", "")
+        satisfiable = payload.get("satisfiable")
+        load_s = payload.get("load_s")
+        solve_cpu_s = payload.get("solve_cpu_s")
+    elif payload and "error" in payload:
+        message = str(payload["error"])
+    if timed_out or (status == RUN_ERROR and res.returncode == -9):
         status = RUN_TIMEOUT
-        runtime_s = timeout_s
     if status == RUN_TIMEOUT:
         runtime_s = timeout_s
     if status in (RUN_CRASH, RUN_ERROR):
@@ -63,17 +60,66 @@ def run_one(cnf_path: str, solver: str, timeout_s: float, run_idx: int,
         "status": status, "runtime_s": runtime_s,
         "tau_s": timeout_s, "wall_s": res.wall_s, "message": message,
         "satisfiable": satisfiable,
+        "load_s": load_s, "solve_cpu_s": solve_cpu_s,
     }
+
+
+def run_many(cnf_path: str, solver: str, timeout_s: float, run_indices: list[int],
+             formula_id: str, seed: int = 0) -> list[dict[str, Any]]:
+    """Run N independent (seed, seed+1, ...) repeats of (formula, solver) in ONE
+    worker subprocess; returns one record per requested run_idx.
+
+    The subprocess wall guard is N * timeout + slack. If the process is killed
+    on the wall clock, every run whose result was not received is recorded as a
+    timeout at `timeout_s` (conservative censoring)."""
+    n = len(run_indices)
+    if n == 0:
+        return []
+    argv = _worker_cmd(Path("unused")) + [
+        "--cnf", cnf_path, "--solver", solver, "--timeout", str(timeout_s),
+        "--seed", str(seed), "--formula-id", formula_id, "--runs", str(n),
+    ]
+    payloads: list[dict[str, Any]] = []
+    parse_error = ""
+    try:
+        res: ProcResult = run_subprocess(argv, timeout_s=n * timeout_s + 5.0)
+    except Exception as exc:  # noqa: BLE001  (e.g. process-group kill unsupported)
+        res = ProcResult(returncode=-1, stdout=b"", stderr=b"", wall_s=float("nan"),
+                         timed_out=False)
+        parse_error = f"subprocess failed: {type(exc).__name__}: {exc}"
+    try:
+        raw = res.stdout.decode().strip()
+        if raw:
+            obj = json.loads(raw)
+            payloads = obj if isinstance(obj, list) else [obj]
+    except Exception as exc:  # noqa: BLE001
+        parse_error = f"bad worker output: {exc}"
+    out: list[dict[str, Any]] = []
+    for k, ridx in enumerate(run_indices):
+        payload = payloads[k] if k < len(payloads) else {}
+        rec = _parse_run_payload(payload, solver, timeout_s, ridx, formula_id, res,
+                                 timed_out=res.timed_out and not payload)
+        if parse_error and not payload:
+            rec["message"] = parse_error
+        out.append(rec)
+    return out
+
+
+def run_one(cnf_path: str, solver: str, timeout_s: float, run_idx: int,
+            formula_id: str, seed: int = 0) -> dict[str, Any]:
+    """Run one (formula, solver) in a subprocess; return a run record dict."""
+    return run_many(cnf_path, solver, timeout_s, [run_idx], formula_id, seed=seed)[0]
 
 
 def profile_formula(cnf_path: str, formula_id: str, family: str, *,
                     tau_screen: float, tau_pres: float, tau_family: float,
-                    solvers: tuple[str, ...], seed_base: int = 0) -> list[dict[str, Any]]:
+                    solvers: tuple[str, ...], seed_base: int = 0,
+                    presolve_solver: str = PRESOLVE_SOLVER) -> list[dict[str, Any]]:
     """Run the three phases for one formula. Returns run records (already
     median-free; label derivation happens in the data stage)."""
     records: list[dict[str, Any]] = []
     try:
-        payload = run_one(cnf_path, PRESOLVE_SOLVER, tau_pres, -1, formula_id, seed=seed_base)
+        payload = run_one(cnf_path, presolve_solver, tau_pres, -1, formula_id, seed=seed_base)
     except Exception:  # noqa: BLE001
         payload = {"status": RUN_ERROR, "runtime_s": float("nan")}
     presolved = payload.get("status") in (RUN_SOLVED,)
@@ -95,9 +141,9 @@ def profile_formula(cnf_path: str, formula_id: str, family: str, *,
         rec = screen[s]
         if rec.get("status") == RUN_SOLVED:
             short_cap = min(tau_screen, max(2.0, 3.0 * (rec.get("runtime_s") or 0.0)))
-            for r in (1, 2):
-                records.append(run_one(cnf_path, s, short_cap, r, formula_id,
-                                          seed=seed_base + 1 + r))
+            # two short repeats in ONE subprocess (one Python start-up, not two)
+            records.extend(run_many(cnf_path, s, short_cap, [1, 2], formula_id,
+                                    seed=seed_base + 2))
         elif rec.get("status") == RUN_TIMEOUT:
             for r in (1, 2):
                 records.append(run_one(cnf_path, s, tau_family, r, formula_id,
@@ -114,11 +160,13 @@ def profile_formula(cnf_path: str, formula_id: str, family: str, *,
 
 
 def _profile_one_worker(item, tau_screen: float, tau_pres: float,
-                        tau_tiers: dict, solvers: tuple, max_timeout: float):
+                        tau_tiers: dict, solvers: tuple, max_timeout: float,
+                        presolve_solver: str = PRESOLVE_SOLVER):
     fid, path, fam = item
     tau_family = float(tau_tiers.get(fam, max_timeout))
     recs = profile_formula(path, fid, fam, tau_screen=tau_screen,
-                           tau_pres=tau_pres, tau_family=tau_family, solvers=solvers)
+                           tau_pres=tau_pres, tau_family=tau_family, solvers=solvers,
+                           presolve_solver=presolve_solver)
     return fid, recs
 
 
@@ -193,8 +241,10 @@ def run_batch(formulas: list[tuple[str, str, str]], cfg: dict[str, Any],
     ex: ProcessPoolExecutor | None = None
     try:
         ex = ProcessPoolExecutor(max_workers=workers)
+        presolve_solver = str(cfg.get("presolve_solver", PRESOLVE_SOLVER))
         futs = {ex.submit(_profile_one_worker, item, tau_screen, tau_pres,
-                          tau_tiers, solvers, max_timeout): item for item in todo}
+                          tau_tiers, solvers, max_timeout, presolve_solver): item
+                for item in todo}
         try:
             for fut in as_completed(futs):
                 fid, recs = fut.result()
@@ -236,9 +286,16 @@ def _init_db(conn) -> None:
             formula_id TEXT, solver TEXT, family TEXT, run_idx INT,
             status TEXT, runtime_s REAL, tau_s REAL, wall_s REAL,
             message TEXT, presolved INT, presolve_time_s REAL,
+            load_s REAL, solve_cpu_s REAL,
             PRIMARY KEY (formula_id, solver, run_idx)
         )
     """)
+    # migrate DBs created before load_s / solve_cpu_s existed
+    for col in ("load_s", "solve_cpu_s"):
+        try:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {col} REAL")
+        except Exception:  # noqa: BLE001  (duplicate column on new DBs)
+            pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_fid ON runs(formula_id)")
     conn.commit()
 
@@ -250,19 +307,33 @@ def _write_records(db_path: Path, formula_id: str, records: list[dict[str, Any]]
         try:
             conn = sqlite3.connect(str(db_path))
             conn.execute("PRAGMA journal_mode=WAL")
+            _init_db(conn)
             with conn:
                 for r in records:
                     conn.execute(
                         "INSERT OR REPLACE INTO runs (formula_id, solver, family, run_idx,"
-                        " status, runtime_s, tau_s, wall_s, message, presolved, presolve_time_s)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        " status, runtime_s, tau_s, wall_s, message, presolved, presolve_time_s,"
+                        " load_s, solve_cpu_s)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (r["formula_id"], r["solver"], r.get("family", ""), r["run_idx"],
-                         r["status"], r.get("runtime_s"), r.get("tau_s"), r.get("wall_s"),
+                         r["status"], _num(r.get("runtime_s")), r.get("tau_s"), r.get("wall_s"),
                          r.get("message", ""), int(r.get("presolved", False)),
-                         r.get("presolve_time_s")),
+                         _num(r.get("presolve_time_s")), _num(r.get("load_s")),
+                         _num(r.get("solve_cpu_s"))),
                     )
             conn.close()
             return
         except Exception:  # noqa: BLE001
             if attempt == 4:
                 raise
+
+
+def _num(x):
+    """SQLite-friendly float: None for NaN/None/non-numeric."""
+    if x is None:
+        return None
+    try:
+        xf = float(x)
+    except (TypeError, ValueError):
+        return None
+    return xf if xf == xf else None

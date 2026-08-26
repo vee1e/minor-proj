@@ -3,7 +3,7 @@
 Pruning, complementarity and best-average computation use train+val rows
 only, so the test set stays untouched.
 
-``portfolio.json`` keys (contract for the frontend / report):
+``portfolio.json`` keys (consumed by evaluate/report and satsel diagnose):
   solvers, best_average_solver, best_average_time_s, mean_best_solver_median,
   unique_share, pruned                                   (existing)
   complementarity[a][b]  fraction of solved instances where a is strictly

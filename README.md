@@ -84,22 +84,6 @@ uv run satsel diagnose     # label distribution, warnings, model diagnostics,
                            # per-system choice histogram
 ```
 
-## Web interface
-
-```
-cd frontend && npm install && npm run build && cd ..
-uv run satsel web                 # http://127.0.0.1:5001
-uv run satsel web --debug --port 5002
-```
-
-The Flask server serves `frontend/dist` and a JSON API (`/api/status`,
-`/api/run-step`, `/api/logs/<step>`, `/api/profiling-stats`,
-`/api/dataset-stats`, `/api/evaluate-stats`, `/api/diagnostics`,
-`/api/report`, `/api/config`, `/api/solve`). Pipeline steps started from the UI
-run as `python -m satsel.cli <step>` with the server's own interpreter, so
-`uv` does not need to be on PATH. For frontend development run
-`npm run dev` in `frontend/` alongside `uv run satsel web`.
-
 ## Why the selector used to always pick MiniSat, and what changed
 
 An early run of the pipeline produced a "selector" that chose MiniSat for every
@@ -136,9 +120,9 @@ the training signal was produced. In plain terms:
    invisible. Training now uses scaling, balanced cost-weighted loss, nested
    CV with Platt calibration, and writes `artifacts/models/model_diagnostics.json`.
 
-`satsel diagnose` (and the web UI's Diagnostics view) prints the label
-distribution, the data-quality warnings, and the per-system choice histogram
-so a degenerate selector is obvious at a glance.
+`satsel diagnose` prints the label distribution, the data-quality warnings,
+and the per-system choice histogram so a degenerate selector is obvious at a
+glance -- no dashboard required.
 
 ## Where the benchmark instances come from
 
@@ -229,8 +213,6 @@ src/satsel/
   oracle/      step 7: SolverOracle
   eval/        step 8: metrics + stats + report
   cli.py       command-line runner (also `python -m satsel.cli`)
-  web_server.py Flask API + static frontend
-frontend/      React UI (npm)
 tests/
 config/default.yaml   # frozen settings
 artifacts/            # outputs, gitignored

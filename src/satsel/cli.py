@@ -1,11 +1,10 @@
 """Command-line runner for the satsel pipeline.
 
 Commands mirror the stages: bench, features, profile, build, train,
-train-gnn, evaluate, oracle, diagnose, web, and `all` (full pipeline).
+train-gnn, evaluate, oracle, diagnose, and `all` (full pipeline).
 
 Runnable both as the ``satsel`` console script and as a module
-(``python -m satsel.cli <step>``); the web server launches steps the
-second way so it does not depend on ``uv`` being on PATH.
+(``python -m satsel.cli <step>``).
 """
 
 from __future__ import annotations
@@ -348,15 +347,6 @@ def _cmd_all(args) -> int:
     return 0
 
 
-def _cmd_web(args) -> int:
-    from satsel.web_server import main as web_main  # lazy: needs flask
-
-    argv = ["--port", str(args.port), "--host", args.host]
-    if args.debug:
-        argv.append("--debug")
-    return web_main(argv)
-
-
 # ---------------------------------------------------------------------------
 # parser
 # ---------------------------------------------------------------------------
@@ -438,11 +428,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--selector", choices=["auto", "classical", "gnn"], default="auto")
     p.set_defaults(func=_cmd_all)
 
-    p = sub.add_parser("web", help="start the Flask web interface")
-    p.add_argument("--port", type=int, default=5001)
-    p.add_argument("--host", type=str, default="127.0.0.1")
-    p.add_argument("--debug", action="store_true", help="Flask debug mode")
-    p.set_defaults(func=_cmd_web)
     return ap
 
 

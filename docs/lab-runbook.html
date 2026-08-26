@@ -265,8 +265,7 @@ SATSEL_DEVICE=cpu  uv run satsel train-gnn --epochs 40    # force CPU</pre></div
       <div class="head"><span class="num">7</span><h2>Evaluate and read the result</h2>
         <span class="where">lab machine · minutes</span></div>
       <div class="cmd"><button class="copy" type="button">copy</button><pre>uv run satsel evaluate
-uv run satsel diagnose
-uv run satsel web                        # dashboard at http://127.0.0.1:5001</pre></div>
+uv run satsel diagnose</pre></div>
       <p>Read <code>artifacts/reports/report.md</code> top to bottom. It deliberately leads with
       data quality before any headline number. The claim the project rests on is supported only
       when all of these hold:</p>
@@ -283,8 +282,7 @@ uv run satsel web                        # dashboard at http://127.0.0.1:5001</p
       <div class="note"><span class="lbl">Honest framing</span>
       <p>A selector that beats the best single solver but picks only one solver is not a selector
       — it <em>is</em> that solver. The choice histogram is what distinguishes a result from an
-      artefact, which is why it now appears in the report, the dashboard and
-      <code>diagnose</code>.</p></div>
+      artefact, which is why it now appears in the report and <code>diagnose</code>.</p></div>
     </section>
 
     <section id="s8">

@@ -12,7 +12,6 @@ The full spec lives in `DEVELOPMENT_PLAN.md`. The pre-registered evaluation rule
 
 - macOS, Linux, or Windows.
 - `uv` (the Python package manager). If you do not have it: `brew install uv`, `pip install uv`, or follow the instructions at https://docs.astral.sh/uv.
-- Node.js + `npm` if you want the web interface.
 - About 2 GB of free disk space.
 - Time. The slowest step (profiling) takes about 1.5 to 2.5 hours on 11 cores. Every other step takes minutes or seconds.
 
@@ -184,21 +183,6 @@ Guarantees you can rely on:
 - **It takes content bytes, not file paths.** A path-based variant exists but rejects symlinks and anything outside the allowed folder.
 - **Inputs are size-checked** before any solver memory is allocated.
 
-## 4b. Web interface
-
-```
-cd frontend
-npm install
-npm run build        # or `npm run dev` for live development
-cd ..
-uv run satsel web    # http://127.0.0.1:5001 ; add --debug for Flask debug mode
-```
-
-The web page shows pipeline status, lets you start each step (logs stream into
-`artifacts/web_logs/`), shows profiling, dataset, diagnostics and evaluation
-views, and lets you paste a CNF to run the oracle. Steps started from the page
-run with the same Python interpreter as the server, so `uv` need not be on PATH.
-
 ## Why the selector used to always pick MiniSat, and what changed
 
 An early run of the pipeline produced a "selector" that chose MiniSat for every
@@ -235,9 +219,9 @@ the training signal was produced. In plain terms:
    invisible. Training now uses scaling, balanced cost-weighted loss, nested
    CV with Platt calibration, and writes `artifacts/models/model_diagnostics.json`.
 
-`satsel diagnose` (and the web UI's Diagnostics view) prints the label
-distribution, the data-quality warnings, and the per-system choice histogram
-so a degenerate selector is obvious at a glance.
+`satsel diagnose` prints the label distribution, the data-quality warnings,
+and the per-system choice histogram so a degenerate selector is obvious at a
+glance -- no dashboard required.
 
 ## 5. Tests
 
@@ -266,9 +250,7 @@ minor-proj/
 │   ├── models/            steps 5-6: classical + GNN
 │   ├── oracle/            step 7: the public API
 │   ├── eval/              step 8: metrics + stats + report
-│   ├── cli.py             the `satsel` command (also `python -m satsel.cli`)
-│   └── web_server.py      Flask API + static frontend
-├── frontend/              React UI (npm run build -> frontend/dist)
+│   └── cli.py             the `satsel` command (also `python -m satsel.cli`)
 ├── tests/
 └── artifacts/             all outputs; gitignored
 ```
@@ -286,8 +268,6 @@ One rule governs the code: a module may only import from `core` or earlier stage
 **Profiling seems stuck at 0 done for minutes.** That is normal only for the hardest family. Easy families are processed first now, so if it is still at zero after a couple of minutes, check that you are on a recent version of the code and that the heartbeat is printing. If you see heartbeat lines but no completions, you are profiling genuinely hard formulas; Ctrl-C and re-run to resume later.
 
 **The selector picks the same solver for every formula.** Run `uv run satsel diagnose`. If `label_majority_share` is close to 1 or `tie_rate` is high, the corpus is too easy (see "Why the selector used to always pick MiniSat"). Re-run `bench` without `--tiny`, ideally the full corpus, then `profile`, `build`, `train`, `evaluate`.
-
-**`uv run satsel web` starts but the page is blank / says the frontend is not built.** Run `cd frontend && npm install && npm run build`, then reload.
 
 **The report says a comparison "not run".** The GNN comparison needs `train-gnn` to have run. The robustness appendix needs a solver hook that is only wired in nightly jobs.
 

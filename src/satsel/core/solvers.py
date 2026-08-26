@@ -79,6 +79,23 @@ def _solver_cpu_time(slv) -> float:
     return float("nan")
 
 
+def _apply_seed(slv, seed: int, nvars: int) -> None:
+    """Deterministically perturb a solver from `seed`.
+
+    pysat backends reject a ``seed`` kwarg (verified on 1.9.dev15), so without
+    this every "repeat" would be the identical deterministic run and a median
+    over repeats would average out nothing. Seeding the variable phases gives
+    genuinely different searches per repeat.
+    """
+    import random
+
+    try:
+        rng = random.Random(seed)
+        slv.set_phases([rng.choice((True, False)) for _ in range(max(nvars, 1))])
+    except Exception:  # noqa: BLE001  # not every backend exposes set_phases
+        pass
+
+
 def solve_in_process(
     clauses: tuple[tuple[int, ...], ...],
     nvars: int,
@@ -97,18 +114,20 @@ def solve_in_process(
     load_start = time.perf_counter()
     try:
         # use_timer=True makes pysat populate time()/time_accum() (solver CPU
-        # time of the last call); most backends reject a `seed` kwarg.
+        # time of the last call). Retry without use_timer for a backend that
+        # rejects even that, so one unsupported kwarg never fails every run.
         try:
-            slv = Solver(name=solver, use_timer=True, seed=seed)
-        except TypeError:
             slv = Solver(name=solver, use_timer=True)
+        except TypeError:
+            slv = Solver(name=solver)
+        _apply_seed(slv, seed, nvars)
     except Exception as exc:  # noqa: BLE001
         return SolveOutcome(status=RUN_ERROR, satisfiable=None, runtime_s=0.0,
                             message=f"solver construct failed: {exc}",
                             load_s=time.perf_counter() - load_start)
 
-    solve_start = load_start
     load_s = 0.0
+    solve_start = time.perf_counter()
     try:
         for clause in clauses:
             slv.add_clause(list(clause))
@@ -209,12 +228,17 @@ def solve_probe(
 
     slv = None
     timer = None
+    # Wall clock starts before construction: bootstrap_with loads the whole
+    # formula, which on a large CNF is tens of ms that used to go unmeasured,
+    # so reported probe cost understated the real one.
+    wall_start = time.perf_counter()
+    clause_list = [list(c) for c in clauses]
     try:
         try:
-            slv = Solver(name=solver, bootstrap_with=[list(c) for c in clauses],
-                         use_timer=True)
+            slv = Solver(name=solver, bootstrap_with=clause_list, use_timer=True)
         except TypeError:
-            slv = Solver(name=solver, bootstrap_with=[list(c) for c in clauses])
+            slv = Solver(name=solver, bootstrap_with=clause_list)
+        _apply_seed(slv, seed, nvars)
 
         fired = {"hit": False}
 
@@ -229,9 +253,7 @@ def solve_probe(
         timer.daemon = True
         timer.start()
 
-        start = time.perf_counter()
         res = slv.solve_limited(expect_interrupt=True)
-        elapsed = time.perf_counter() - start
 
         timer.cancel()
         try:
@@ -249,7 +271,7 @@ def solve_probe(
             ok=True,
             solved=res is not None,
             satisfiable=(None if res is None else bool(res)),
-            runtime_s=min(elapsed, budget_s) if res is None else elapsed,
+            runtime_s=time.perf_counter() - wall_start,
             interrupted=bool(fired["hit"] and res is None),
             stats=stats,
         )

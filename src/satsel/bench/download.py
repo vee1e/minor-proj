@@ -26,9 +26,11 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import os
 import tarfile
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import urljoin
 
 import requests
 
@@ -109,14 +111,38 @@ def total_available(family: str | None = None) -> int:
     return sum(a.n_instances for a in pool)
 
 
+def _tiebreak(label: str) -> int:
+    """Stable deterministic order between candidates that tie on skew too."""
+    return int.from_bytes(hashlib.sha256(label.encode()).digest()[:4], "big")
+
+
+def _skew_if(eligible: list[Archive], quota: dict[str, int],
+             base: dict[str, int], pick: Archive) -> int:
+    """|sat - unsat| across the allocation if `pick` receives one more unit."""
+    s = sum(quota[a.label] + base[a.label]
+            for a in eligible if a.status == "sat")
+    u = sum(quota[a.label] + base[a.label]
+            for a in eligible if a.status == "unsat")
+    if pick.status == "sat":
+        s += 1
+    elif pick.status == "unsat":
+        u += 1
+    return abs(s - u)
+
+
 def allocate(archives: list[Archive], want: int) -> dict[str, int]:
     """Split `want` across `archives` by weight, clamped to what each holds.
 
     Uses largest-remainder apportionment rather than a sequential greedy split,
-    so two archives with the same weight receive the same quota. That matters
-    here: uf and uuf sets at a given size are deliberately weighted equally to
-    keep the corpus balanced between satisfiable and unsatisfiable instances,
-    and a greedy loop would quietly skew it toward whichever came first.
+    so two archives with the same weight receive the same quota wherever the
+    total allows it. That matters here: uf and uuf sets at a given size are
+    deliberately weighted equally to keep the corpus balanced between
+    satisfiable and unsatisfiable instances, and a greedy loop would quietly
+    skew it toward whichever came first.
+
+    Leftover units (from rounding, unavoidable on odd quotas) go to the tied
+    archive that least disturbs the sat/unsat balance, so an odd request never
+    systematically lands on the satisfiable half.
 
     Overflow from an archive clamped at its true size is redistributed to
     archives that still have room, so asking for more than one set can supply
@@ -134,16 +160,21 @@ def allocate(archives: list[Archive], want: int) -> dict[str, int]:
         if total_w <= 0:
             break
 
-        # Hare quota: floor of the exact share, then hand out what is left over
-        # to the largest fractional remainders.
+        # Hare quota: floor of the exact share, then hand out what is left over.
         exact = {a.label: remaining * a.weight / total_w for a in eligible}
         base = {lbl: int(val) for lbl, val in exact.items()}
         leftover = remaining - sum(base.values())
-        order = sorted(eligible,
-                       key=lambda a: (-(exact[a.label] - base[a.label]),
-                                      archives.index(a)))
-        for a in order[:leftover]:
-            base[a.label] += 1
+        eps = 1e-9
+        for _ in range(leftover):
+            rem = {a.label: exact[a.label] - base[a.label] for a in eligible}
+            top = max(rem.values())
+            tied = [a for a in eligible if rem[a.label] > top - eps]
+            with_room = [a for a in tied
+                         if quota[a.label] + base[a.label] + 1 <= a.n_instances]
+            pool = with_room or tied
+            pick = min(pool, key=lambda a: (_skew_if(eligible, quota, base, a),
+                                            _tiebreak(a.label)))
+            base[pick.label] += 1
 
         progressed = False
         for a in list(eligible):
@@ -163,28 +194,49 @@ def allocate(archives: list[Archive], want: int) -> dict[str, int]:
 
 def _get(url: str, *, https_only: bool = True,
          timeout: float = HTTP_TIMEOUT_S) -> bytes | None:
+    """Fetch `url` with redirects followed manually.
+
+    `allow_redirects=False` matters: with auto-redirects a 302 to
+    `http://...` would be followed silently and the https_only check on the
+    initial URL would never see the downgrade.
+    """
     if https_only and not url.startswith("https://"):
         log.debug("refusing non-https url %s", url)
         return None
-    try:
-        with requests.get(url, timeout=timeout, allow_redirects=True,
-                          stream=True) as resp:
-            if resp.status_code != 200:
-                log.debug("HTTP %s for %s", resp.status_code, url)
-                return None
-            chunks: list[bytes] = []
-            total = 0
-            for chunk in resp.iter_content(chunk_size=256 * 1024):
-                total += len(chunk)
-                if total > MAX_ARCHIVE_BYTES:
-                    log.warning("archive %s exceeds %d bytes; abandoning",
-                                url, MAX_ARCHIVE_BYTES)
+    current = url
+    for _ in range(10):
+        try:
+            with requests.get(current, timeout=timeout, allow_redirects=False,
+                              stream=True) as resp:
+                if resp.is_redirect or resp.is_permanent_redirect:
+                    loc = resp.headers.get("Location")
+                    if not loc:
+                        return None
+                    nxt = urljoin(current, loc)
+                    if https_only and not nxt.startswith("https://"):
+                        log.warning("refusing redirect from %s to non-https %s",
+                                    current, nxt)
+                        return None
+                    current = nxt
+                    continue
+                if resp.status_code != 200:
+                    log.debug("HTTP %s for %s", resp.status_code, current)
                     return None
-                chunks.append(chunk)
-            return b"".join(chunks)
-    except requests.RequestException as exc:
-        log.debug("download failed for %s: %s", url, exc)
-        return None
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in resp.iter_content(chunk_size=256 * 1024):
+                    total += len(chunk)
+                    if total > MAX_ARCHIVE_BYTES:
+                        log.warning("archive %s exceeds %d bytes; abandoning",
+                                    current, MAX_ARCHIVE_BYTES)
+                        return None
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except requests.RequestException as exc:
+            log.debug("download failed for %s: %s", current, exc)
+            return None
+    log.warning("too many redirects for %s", url)
+    return None
 
 
 def verify_cnf_bytes(data: bytes, family: str = "") -> bool:
@@ -196,11 +248,20 @@ def verify_cnf_bytes(data: bytes, family: str = "") -> bool:
         return False
 
 
+def _archive_cache_path(url: str, cache_dir: Path) -> Path:
+    key = hashlib.sha256(url.encode()).hexdigest()
+    return cache_dir / f"{key}.tar.gz"
+
+
 def _cached_archive(url: str, cache_dir: Path, *, https_only: bool) -> bytes | None:
-    """Fetch `url`, using `cache_dir` so a rebuild does not re-download."""
+    """Fetch `url`, using `cache_dir` so a rebuild does not re-download.
+
+    The write is atomic (tmp file + rename) so an interrupted download can
+    never leave a truncated file that later runs mistake for a valid cache
+    entry.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    key = hashlib.sha256(url.encode()).hexdigest()[:16]
-    cached = cache_dir / f"{key}.tar.gz"
+    cached = _archive_cache_path(url, cache_dir)
     if cached.exists():
         try:
             data = cached.read_bytes()
@@ -212,11 +273,26 @@ def _cached_archive(url: str, cache_dir: Path, *, https_only: bool) -> bytes | N
     data = _get(url, https_only=https_only, timeout=ARCHIVE_TIMEOUT_S)
     if data is None:
         return None
+    tmp = cached.with_suffix(".tar.gz.tmp")
     try:
-        cached.write_bytes(data)
+        tmp.write_bytes(data)
+        os.replace(tmp, cached)
     except OSError as exc:  # cache is an optimisation, not a requirement
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         log.debug("could not cache %s: %s", url, exc)
     return data
+
+
+def evict_archive(url: str, cache_dir: Path) -> None:
+    """Drop a cache entry whose contents turned out to be unusable, so the
+    next run re-downloads instead of failing on the same corrupt file forever."""
+    try:
+        _archive_cache_path(url, cache_dir).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _extract_cnfs(data: bytes, limit: int) -> list[tuple[bytes, str]]:
@@ -265,7 +341,7 @@ def download_satlib(family_counts: dict[str, int], out_dir: Path,
     cache_dir = Path(out_dir) / "_cache"
     out: list = []
 
-    for family in {a.family for a in SATLIB_ARCHIVES}:
+    for family in sorted({a.family for a in SATLIB_ARCHIVES}):
         want = int(family_counts.get(family, 0))
         if want <= 0:
             continue
@@ -287,7 +363,11 @@ def download_satlib(family_counts: dict[str, int], out_dir: Path,
                 continue
             members = _extract_cnfs(data, take)
             if not members:
-                log.warning("SATLIB archive %s yielded no usable CNFs", archive.label)
+                # A cached-but-corrupt archive would otherwise fail every run;
+                # evict so the next attempt re-downloads.
+                log.warning("SATLIB archive %s yielded no usable CNFs; "
+                            "evicting cache entry", archive.label)
+                evict_archive(f"{SATLIB_BASE}/{archive.path}", cache_dir)
                 continue
             for payload, name in members:
                 out.append((payload, family, f"satlib-{archive.label}-{name}"))
@@ -329,8 +409,8 @@ def cache_status(out_dir: Path) -> dict[str, bool]:
     cache_dir = Path(out_dir) / "_cache"
     out: dict[str, bool] = {}
     for archive in SATLIB_ARCHIVES:
-        key = hashlib.sha256(f"{SATLIB_BASE}/{archive.path}".encode()).hexdigest()[:16]
-        out[archive.label] = (cache_dir / f"{key}.tar.gz").exists()
+        url = f"{SATLIB_BASE}/{archive.path}"
+        out[archive.label] = _archive_cache_path(url, cache_dir).exists()
     return out
 
 

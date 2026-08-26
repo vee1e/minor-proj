@@ -22,6 +22,7 @@ POST /api/solve             {cnf} JSON or multipart 'file' -> oracle result
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import subprocess
@@ -40,6 +41,14 @@ app = Flask(__name__)
 CORS(app)
 
 CFG = load_config()
+# Reject oversized bodies before Flask buffers them, not after.
+app.config["MAX_CONTENT_LENGTH"] = int(
+    CFG.get("oracle", {}).get("max_bytes", 512 * 1024 * 1024))
+
+
+@app.errorhandler(413)
+def _too_large(_e):
+    return jsonify({"error": "request body exceeds oracle.max_bytes"}), 413
 
 # Thread-safe tracker for background jobs
 BACKGROUND_JOBS: dict[str, dict[str, Any]] = {}
@@ -388,9 +397,14 @@ def solve():
     timeout_s = hard_cap
     if raw_timeout is not None:
         try:
-            timeout_s = min(float(raw_timeout), hard_cap)
+            parsed = float(raw_timeout)
         except (TypeError, ValueError):
             return jsonify({"error": "timeout must be a number"}), 400
+        # min(nan, cap) returns nan, and a negative timeout would flow straight
+        # into the oracle, so both are rejected explicitly.
+        if not math.isfinite(parsed) or parsed <= 0:
+            return jsonify({"error": "timeout must be a positive finite number"}), 400
+        timeout_s = min(parsed, hard_cap)
 
     try:
         from satsel.oracle.oracle import SolverOracle

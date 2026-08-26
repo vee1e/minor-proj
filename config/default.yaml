@@ -42,8 +42,7 @@ label_min_spread: 1.5         # informative = max_s T(i,s)/T(i,s*) >= 1.5 (train
 # ---- GNN scope ----
 gnn_node_cap: 500000          # n + m <= cap, else route to classical path
 gnn_layer_ablation: [1, 2, 4]
-gnn_node_feats_ablation: ["full", "none"]   # O6: expert-knowledge vs feature-free GNN
-use_positional_encodings: true
+gnn_node_feats_ablation: ["full", "structural", "none"]   # O6: expert-knowledge vs degree-only vs feature-free
 
 # ---- Cost weighting ----
 cost_clip: 10                 # w = clamp(T(i,s)/T(i,s*), 1, 10)
@@ -69,7 +68,8 @@ ood_family_primary: scheduling     # generated scheduling
 lofo_metric: par2_mean
 min_vbs_solve_rate_per_family: 0.70   # top-up families below this
 download_https_only: true
-verify_checksums: true
+# note: archive contents are validated by parsing every member as DIMACS CNF;
+# no upstream checksums exist for the SATLIB tarballs, so none are verified.
 
 # ---- Seeds ----
 seeds:

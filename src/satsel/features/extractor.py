@@ -1,13 +1,14 @@
 """Feature extraction: turn a CNF into a fixed-size numeric vector.
 
 Groups are extracted cheapest-first so a hard time budget can be respected:
-syntactic (O(n+m)), then graph (near-linear), then a short solver probe (run in
-a killable subprocess). Any group that would exceed the remaining budget is
-marked missing.
+syntactic (O(n+m)), then graph (near-linear), then a short in-process solver
+probe stopped by the solver's own interrupt(). Any group that would exceed the
+remaining budget is marked missing.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 import statistics
 import time
@@ -271,13 +272,13 @@ def _probe(cnf: Cnf, budget_s: float, seed: int) -> dict[str, float]:
     """
     from satsel.core.solvers import solve_probe
 
-    f: dict[str, float] = dict.fromkeys(PROBE_FEATURES, 0.0)
-    f["probe_satisfiable"] = -1.0
-
     out = solve_probe(cnf.clauses, cnf.nvars, PROBE_SOLVER, budget_s, seed=seed)
     if not out.ok:
-        return f
+        # A failed probe must look missing, not like a real run whose counters
+        # happened to be zero; otherwise training learns a fake pattern.
+        return {}
 
+    f: dict[str, float] = {}
     f["probe_runtime_s"] = float(min(out.runtime_s, budget_s))
     if out.solved:
         f["probe_solved"] = 1.0
@@ -316,11 +317,13 @@ _GROUP_NAMES: dict[str, list[str]] = _group_names_for(
     Cnf(nvars=3, nclauses=2, clauses=((1, 2, 3), (-1, 3)), family="", source=""))
 
 
-def extract_features(cnf: Cnf, budget_s: float, seed: int = 0) -> FeatureVector:
+def extract_features(cnf: Cnf, budget_s: float, seed: int = 0, *,
+                     enable_probe: bool = True) -> FeatureVector:
     """Extract features within a hard budget (cheapest groups first).
 
     Every feature in the fixed schema always appears; a group skipped by the
-    budget contributes its features with value 0.0 and missing=True.
+    budget (or by `enable_probe=False`) contributes its features with value
+    0.0 and missing=True.
 
     Timing uses perf_counter, not monotonic: monotonic has a ~15.6 ms
     resolution on Windows, which is coarse enough that a 200 ms budget was
@@ -351,8 +354,11 @@ def extract_features(cnf: Cnf, budget_s: float, seed: int = 0) -> FeatureVector:
     remaining = budget_s - (time.perf_counter() - t0)
     probe_budget = min(PROBE_BUDGET_S,
                        max(0.0, remaining * PROBE_BUDGET_FRACTION - PROBE_STOP_MARGIN_S))
-    ran_probe = probe_budget >= 0.02
+    ran_probe = enable_probe and probe_budget >= 0.02
     probe = _probe(cnf, probe_budget, seed) if ran_probe else {}
+    if ran_probe and not probe:
+        # probe failed (non-interruptible solver or exception): mark missing
+        ran_probe = False
 
     names: list[str] = []
     values: list[float] = []
@@ -379,13 +385,20 @@ FEATURE_NAMES: tuple[str, ...] = tuple(
 FEATURE_GROUPS: dict[str, list[str]] = {k: list(v) for k, v in _GROUP_NAMES.items()}
 
 
-def extract_one(cnf: Cnf, budget_s: float, seed: int = 0) -> dict:
-    fv = extract_features(cnf, budget_s, seed)
+def extract_one(cnf: Cnf, budget_s: float, seed: int = 0, *,
+                enable_probe: bool = True) -> dict:
+    fv = extract_features(cnf, budget_s, seed, enable_probe=enable_probe)
     out = {"formula_id": cnf.name, "feat_cost_s": fv.cost_s,
            "missing_frac": sum(fv.missing) / max(len(fv.missing), 1)}
     for name, val, miss in zip(fv.names, fv.values, fv.missing, strict=True):
         out[f"f_{name}"] = 0.0 if miss else val
     return out
+
+
+def _stable_seed(formula_id: str) -> int:
+    """Stable per-formula seed. str.__hash__ is salted per process, so it
+    would give each pool worker a different seed and differ across reruns."""
+    return int(hashlib.md5(formula_id.encode()).hexdigest()[:8], 16)
 
 
 def _extract_row_worker(args) -> dict:
@@ -394,12 +407,9 @@ def _extract_row_worker(args) -> dict:
     row, budget, enable_probe = args
     c = parse_cnf(Path(row["path"]).read_bytes())
     c.name = row["formula_id"]
-    rec = extract_one(c, budget, seed=int(row["formula_id"].__hash__() % (2**31)))
+    rec = extract_one(c, budget, seed=_stable_seed(row["formula_id"]),
+                      enable_probe=enable_probe)
     rec["formula_id"] = row["formula_id"]
-    if not enable_probe:
-        for k in list(rec):
-            if k.startswith("f_probe_"):
-                rec[k] = 0.0
     return rec
 
 
@@ -407,6 +417,7 @@ def batch_extract(cfg: dict, manifest_path: str | Path, workers: int = 4,
                   enable_probe: bool = True) -> None:
     """Extract features for every formula in the manifest; write parquet +
     schema json into cfg['paths']['features']."""
+    import json
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     manifest = Path(manifest_path)
@@ -414,8 +425,21 @@ def batch_extract(cfg: dict, manifest_path: str | Path, workers: int = 4,
     out_dir = Path(cfg["paths"]["features"])
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    budget = max(float(cfg.get("feat_budget_frac", 0.05)) * 0.5,
-                 float(cfg.get("feat_budget_floor_s", 0.20)))
+    # Same budget formula the oracle uses at inference time, so training and
+    # serving features are extracted under identical conditions. The previous
+    # `frac * 0.5` here disagreed with feat_budget_s whenever the portfolio's
+    # mean best-solver median exceeded 4 s.
+    from satsel.core.config import feat_budget_s
+
+    portfolio_path = Path(cfg["paths"]["models"]) / "portfolio.json"
+    mean_best = 0.5
+    try:
+        if portfolio_path.exists():
+            mean_best = float(json.loads(portfolio_path.read_text())
+                              .get("mean_best_solver_median", 0.5))
+    except Exception:  # noqa: BLE001  # fall back to the default mean
+        pass
+    budget = feat_budget_s(cfg, mean_best)
 
     args = [(r, budget, enable_probe) for r in df.to_dict("records")]
     records: list[dict] = []
@@ -433,6 +457,5 @@ def batch_extract(cfg: dict, manifest_path: str | Path, workers: int = 4,
         "feature_names": list(FEATURE_NAMES),
         "feature_groups": {k: v for k, v in FEATURE_GROUPS.items()},
     }
-    import json
 
     (out_dir / "feature_schema.json").write_text(json.dumps(schema, indent=2))

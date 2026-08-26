@@ -47,7 +47,7 @@ def prune_portfolio(dataset: pd.DataFrame, cfg: dict) -> dict:
     solvers = _solvers_in(dataset)
     id_df = dataset[(dataset["split"].isin(["train", "val"]))].copy()
     solved = id_df[id_df["vbs_solved"].fillna(False).astype(bool)]
-    tie_margin = float(cfg.get("tie_margin", 1.2))
+    tie_margin = float(cfg.get("tie_margin", 1.1))
 
     unique_share: dict[str, float] = {}
     for s in solvers:

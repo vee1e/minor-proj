@@ -95,9 +95,10 @@ def derive_labels(cfg: dict) -> pd.DataFrame:
             ok_runs = sr[sr["status"] == RUN_SOLVED]
             ok_times = [float(x) for x in ok_runs["runtime_s"] if x == x]
             # median over finished runs; a solver that finished fewer than half
-            # its runs has median = tau (censored), hence not solved.
-            n_timeout = int((sr["status"] == "timeout").sum())
-            n_total = len(ok_times) + n_timeout   # crashes/errors are not evidence
+            # its runs has median = tau (censored), hence not solved. Crashes and
+            # errors count as not-finished too, so one lucky solve plus two
+            # crashes does not mark the solver solved.
+            n_total = int(len(sr))
             if ok_times and 2 * len(ok_times) >= n_total:
                 med = _median(ok_times)
             else:

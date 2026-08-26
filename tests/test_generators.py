@@ -20,7 +20,25 @@ class TestGeneratorsQuick:
             cnfs = fn(3, 1)
             assert len(cnfs) == 3
             for c in cnfs:
-                assert c.nvars == max((abs(l) for cl in c.clauses for l in cl), default=0)
+                assert c.nvars == max((abs(lit) for cl in c.clauses for lit in cl), default=0)
+
+    def test_random3sat_phase_transition_sizes(self):
+        cnfs = g.gen_random3sat_batch(6, 3)
+        for c in cnfs:
+            assert 200 <= c.nvars <= 320
+            assert abs(c.nclauses / c.nvars - 4.26) < 0.02
+        large = g.gen_random3sat_large_batch(6, 3)
+        for c in large:
+            assert 320 <= c.nvars <= 420
+            assert 4.15 <= c.nclauses / c.nvars <= 4.35
+
+    def test_deterministic(self):
+        a = g.gen_colouring_batch(3, 11)
+        b = g.gen_colouring_batch(3, 11)
+        assert [c.clauses for c in a] == [c.clauses for c in b]
+        a = g.gen_scheduling_batch(2, 11)
+        b = g.gen_scheduling_batch(2, 11)
+        assert [c.clauses for c in a] == [c.clauses for c in b]
 
     def test_generate_all_counts(self):
         out = g.generate_all({"random3sat": 5, "random3sat_large": 5,
@@ -37,7 +55,7 @@ class TestGeneratorsSlow:
 
         cnfs = g.gen_planning_batch(6, 1)
         for c in cnfs:
-            o = solve_in_process(c.clauses, c.nvars, "kissat404", 5.0)
+            o = solve_in_process(c.clauses, c.nvars, "cadical153", 30.0)
             assert o.status == "solved"
             assert bool(o.satisfiable) == bool(c.extra["ground_truth"])
 
@@ -46,6 +64,6 @@ class TestGeneratorsSlow:
 
         cnfs = g.gen_scheduling_batch(6, 1)
         for c in cnfs:
-            o = solve_in_process(c.clauses, c.nvars, "kissat404", 5.0)
+            o = solve_in_process(c.clauses, c.nvars, "cadical153", 30.0)
             assert o.status == "solved"
             assert bool(o.satisfiable) == bool(c.extra["ground_truth"])

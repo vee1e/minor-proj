@@ -10,8 +10,9 @@ The full spec lives in `DEVELOPMENT_PLAN.md`. The pre-registered evaluation rule
 
 ## What you need before you start
 
-- macOS or Linux.
-- `uv` (the Python package manager). If you do not have it: `brew install uv`, or follow the instructions at https://docs.astral.sh/uv.
+- macOS, Linux, or Windows.
+- `uv` (the Python package manager). If you do not have it: `brew install uv`, `pip install uv`, or follow the instructions at https://docs.astral.sh/uv.
+- Node.js + `npm` if you want the web interface.
 - About 2 GB of free disk space.
 - Time. The slowest step (profiling) takes about 1.5 to 2.5 hours on 11 cores. Every other step takes minutes or seconds.
 
@@ -45,8 +46,13 @@ You should see a line like `34 passed, 3 deselected`.
 One command builds everything, in order:
 
 ```
-uv run satsel all
+uv run satsel all            # full corpus (hours, mostly profiling)
+uv run satsel all --small    # pilot corpus, ~80 formulas per family + 40 OOD (minutes)
+uv run satsel all --tiny     # smoke test of the plumbing only; do not read its numbers
 ```
+
+Use `--small` for a first real run. `--tiny` exists for CI: it is far too small to
+train a selector and `build` will warn you about that.
 
 It runs these steps, in this order:
 
@@ -57,6 +63,10 @@ It runs these steps, in this order:
 5. `train` — train the classical models (Random Forest, XGBoost, SVM) plus the SATzilla baseline, and pick the fallback threshold.
 6. `train-gnn` — train the graph neural network (skip with `--no-gnn`).
 7. `evaluate` — run the pre-registered statistics and write the report.
+
+After `build` and again at the very end it prints any data-quality warnings
+(majority-class labels, high tie rate, too few usable training rows). If you see
+those, the corpus is too easy or too small; do not trust the selector numbers.
 
 When it finishes, open the report:
 
@@ -71,18 +81,150 @@ Everything `satsel all` does can be run separately. Run them in this order becau
 ### 3.1 bench: get the formulas
 
 ```
-uv run satsel bench
+uv run satsel bench            # full corpus
+uv run satsel bench --small    # pilot corpus (~540 formulas)
+uv run satsel bench --tiny     # CI smoke only
 ```
 
-Tries to download real benchmark instances from SATLIB and GBD. Those servers are often unreachable, and one old host is known to be hijacked, so the downloader is a bounded probe: if it gets nothing it logs a warning and the project's own generators fill every family to its target. The result is always 2300 formulas (200 of them held out as the out-of-distribution family).
+This step assembles the corpus from two sources: **real benchmark instances
+downloaded from SATLIB**, topped up by the project's own seeded generators for
+the families SATLIB does not cover.
+
+#### What gets downloaded
+
+Instances come from the canonical SATLIB mirror at UBC:
+
+```
+https://www.cs.ubc.ca/~hoos/SATLIB/Benchmarks/SAT/
+```
+
+To see exactly what is on offer, what it holds and what is already on disk:
+
+```
+uv run satsel sources             # the table below, plus cache state
+uv run satsel sources --probe     # also check each archive is reachable now
+uv run satsel sources --fetch     # download every archive into the cache
+```
+
+| archive | family | kind | instances | vars | weight |
+| --- | --- | --- | ---: | ---: | ---: |
+| uf250-1065 | random3sat | sat | 100 | 250 | 5 |
+| uuf250-1065 | random3sat | **unsat** | 100 | 250 | 5 |
+| uf225-960 | random3sat | sat | 100 | 225 | 4 |
+| uuf225-960 | random3sat | **unsat** | 100 | 225 | 4 |
+| uf200-860 | random3sat | sat | 100 | 200 | 3 |
+| uuf200-860 | random3sat | **unsat** | 99 | 200 | 3 |
+| uf175-753 | random3sat | sat | 100 | 175 | 1 |
+| uuf175-753 | random3sat | **unsat** | 100 | 175 | 1 |
+| uf150-645 | random3sat | sat | 100 | 150 | 1 |
+| uuf150-645 | random3sat | **unsat** | 100 | 150 | 1 |
+| CBS_k3_n100_m403_b10 | random3sat | sat | 1000 | 100 | 1 |
+| flat200-479 | colouring | sat | 100 | 600 | 3 |
+| flat125-301 | colouring | sat | 100 | 375 | 2 |
+| logistics | planning | sat | 4 | 828 | 1 |
+| blocksworld | planning | sat | 7 | 459 | 1 |
+
+**2,210 real instances are available in total** — enough on its own to meet the
+N >= 2,000 target in the synopsis. The generators then only cover what SATLIB
+has no equivalent for: `random3sat_large`, `industrial`, `crypto`,
+`scheduling`, and the held-out `ood_scheduling` family.
+
+#### How the quota is split
+
+A family's requested count is divided across its archives **by weight**, not
+evenly. Weight reflects how much an archive tells you about solver choice:
+
+- `uf/uuf250` sit exactly on the 4.26 satisfiability phase transition, where
+  instances are hardest and solvers disagree most. Highest weight.
+- `uf/uuf150` and `CBS` solve in milliseconds on every solver in the portfolio,
+  so they contribute almost no signal about which solver to pick. Lowest weight.
+
+The `uf` (satisfiable) and `uuf` (unsatisfiable) sets at each size carry
+**equal** weight on purpose. UNSAT instances are where CDCL solvers separate
+most, because proving no solution exists means exhausting the search space —
+there is no lucky early exit to flatter a weak solver. Allocation uses
+largest-remainder apportionment so that balance is exact rather than drifting.
+
+#### Caching, and running offline
+
+Every archive is downloaded once and cached under `artifacts/raw/_cache/`.
+Re-running `bench` reuses the cache and does no network I/O.
+
+If the machine you profile on has no internet (common in a lab), warm the cache
+somewhere that does, then copy the folder across:
+
+```
+uv run satsel sources --fetch          # on a networked machine (~4 MB total)
+# copy artifacts/raw/_cache/ to the same path on the target machine
+uv run satsel bench                    # runs fully offline
+```
+
+#### Checking what you actually got
+
+Provenance is recorded per formula, so this is never a guess. The manifest
+carries a `source` column, and `dataset_summary.json` reports
+`source_distribution`, `n_real_instances`, `n_generated_instances` and
+`real_instance_share`.
+
+```
+uv run satsel bench --small
+python -c "import pandas as pd; d=pd.read_parquet('artifacts/manifests/formulas.parquet'); print(d['source'].value_counts())"
+```
+
+If nothing downloaded, `provenance_warnings` says so in plain words rather than
+letting a fully synthetic corpus be written up as an open benchmark collection.
+
+**Want a higher real share?** SATLIB only covers three of the eight families, so
+the pilot lands near a third real. Raising the counts for `random3sat`,
+`colouring` and `planning` (SATLIB holds 1,999 random-3SAT instances alone)
+pulls in more real data — at the cost of changing the family balance of the
+study, which is a design decision worth making deliberately.
 
 ### 3.2 features: turn formulas into numbers
 
 ```
-uv run satsel features --workers 11
+uv run satsel features --workers 8
+uv run satsel features --no-probe     # skip the probe group entirely
 ```
 
-Each formula becomes a fixed vector of 63 numbers: clause lengths, variable occurrences, graph statistics, and a short solver probe. Extraction respects a time budget; if a group would exceed it, those features are marked missing.
+Each formula becomes 70 numbers, in three groups computed cheapest-first so a
+hard time budget can be enforced:
+
+| group | what it measures | cost |
+| --- | --- | --- |
+| syntactic | counts, ratios, clause-length statistics | ~2 ms |
+| graph | degree distributions, clustering, components | ~5 ms |
+| probe | a short DPLL run and the solver's own counters | up to the budget |
+
+The budget is `tau_feat = max(5% of mean solver runtime, 0.20 s)`. At the
+default 0.2 s a full extraction costs about 156 ms.
+
+**The probe runs in-process**, stopped by the solver's own `interrupt()`. It
+previously wrote a temp file and spawned a Python subprocess, costing ~0.45 s
+per instance — more than the budget it was supposed to fit inside, and on easy
+formulas several hundred times the solve time it was measuring.
+
+Only some pysat backends can be interrupted. CaDiCaL and Lingeling raise
+`NotImplementedError`; a CaDiCaL probe given 0.15 s ran for 5.8 s because
+nothing could stop it. The probe solver must therefore come from
+`core.solvers.INTERRUPTIBLE_SOLVERS`, and MiniSat is the default.
+
+Running in-process also makes the solver's counters available, which is where
+the search-space features come from: conflicts, decisions, propagations and
+restarts (log-compressed), plus scale-free ratios like
+propagations-per-decision and decisions-per-variable.
+
+Two honest caveats:
+
+- **Groups are atomic.** The budget decides whether a group is *entered*, since
+  a half-computed group yields nothing usable. Entry uses a size-based cost
+  estimate rather than "is there time left".
+- **`interrupt()` is cooperative.** It sets a flag the solver checks
+  periodically, so stopping takes ~15 ms. The probe gets a margin and only a
+  fraction of the remaining time, which keeps the total inside the budget.
+
+If a group is skipped, its features are written as 0.0 and flagged missing
+rather than dropped, so the schema stays fixed at 70 columns.
 
 ### 3.3 profile: time every solver (the slow part)
 
@@ -120,9 +262,39 @@ Trains Random Forest, XGBoost, and SVM classifiers with cost-weighted training (
 
 ```
 uv run satsel train-gnn --epochs 40
+SATSEL_DEVICE=cuda uv run satsel train-gnn --epochs 40    # force GPU
+SATSEL_DEVICE=cpu  uv run satsel train-gnn --epochs 40    # force CPU
 ```
 
-Trains the graph neural network. It reads each formula as a bipartite graph of variables and clauses and trains with an expected-cost loss. Formulas larger than a size cap are routed to the classical path at prediction time.
+On Windows PowerShell set the variable with `$env:SATSEL_DEVICE="cuda"`.
+
+The model is the GraSS tripartite heterogeneous GNN: `var`, `lit` and `clause`
+node types over four relations, with sinusoidal positional encodings on clause
+nodes and a runtime-sensitive expected-cost loss. Giving each literal its own
+node is what preserves polarity — an earlier version indexed edges by
+`abs(lit)`, so `(x OR y)` and `(NOT x OR NOT y)` were indistinguishable to it.
+
+**The feature-free comparison (objective O6).** Training runs the whole thing
+twice: once with the designed per-node-type features, and once with every node
+feature replaced by a constant, leaving only topology and message passing.
+Identical splits, seeds and architecture, so the difference is attributable to
+the node features alone — which is the feature-engineering-bottleneck question
+Zhang et al. (2026) raise, measured here rather than cited.
+
+Results land in `results.json` under `gnn_feature_free` and in section 8b of
+`report.md`:
+
+- **positive difference** — the designed features are earning their place
+- **near zero** — topology alone carries the signal, and the hand-designed
+  node features are decoration
+- **negative** — the feature-free model is better; say so in the write-up
+
+Configure with `gnn_node_feats_ablation` in `config/default.yaml`
+(`full`, `structural`, `none`). Set it to a single mode to halve training time
+once you no longer need the comparison.
+
+Training also reports a per-layer ablation, the histogram of solvers chosen on
+validation, and an explicit warning if the model collapsed onto one solver.
 
 ### 3.7 evaluate: the pre-registered statistics
 
@@ -131,6 +303,18 @@ uv run satsel evaluate
 ```
 
 Runs the exact protocol from `EVAL_PROTOCOL.md`: PAR-2 (mean solve time with timeouts counted double), solve rate, the stratified bootstrap confidence interval, Wilcoxon and McNemar tests, Holm-Bonferroni adjustment across the four planned comparisons, the out-of-distribution check, and the robustness appendix. Writes `artifacts/reports/report.md` and `results.json`.
+
+### 3.8 diagnose: check what you have (read-only)
+
+```
+uv run satsel diagnose
+```
+
+Prints the dataset warnings and label distribution, the model diagnostics
+(predicted-class distribution, CV scores, portfolio complementarity, theta),
+and the per-system choice histogram from `results.json`. Run it whenever a
+result looks suspicious, for example when one solver is picked for every
+formula.
 
 ## 4. Use the one public API
 
@@ -162,6 +346,61 @@ Guarantees you can rely on:
 - **It takes content bytes, not file paths.** A path-based variant exists but rejects symlinks and anything outside the allowed folder.
 - **Inputs are size-checked** before any solver memory is allocated.
 
+## 4b. Web interface
+
+```
+cd frontend
+npm install
+npm run build        # or `npm run dev` for live development
+cd ..
+uv run satsel web    # http://127.0.0.1:5001 ; add --debug for Flask debug mode
+```
+
+The web page shows pipeline status, lets you start each step (logs stream into
+`artifacts/web_logs/`), shows profiling, dataset, diagnostics and evaluation
+views, and lets you paste a CNF to run the oracle. Steps started from the page
+run with the same Python interpreter as the server, so `uv` need not be on PATH.
+
+## Why the selector used to always pick MiniSat, and what changed
+
+An early run of the pipeline produced a "selector" that chose MiniSat for every
+formula. That was not a modelling insight; it was four compounding bugs in how
+the training signal was produced. In plain terms:
+
+1. **Timing measured clause loading, not solving (R1).** The stopwatch started
+   before the Python loop that feeds clauses into the solver object. On the
+   small generated formulas every solver finishes in milliseconds, so the
+   "runtime" was dominated by per-solver constant overhead, and the solver with
+   the lightest Python wrapper (MiniSat) "won" nearly every time. Timing now
+   wraps only `solve()` (`perf_counter`) and also records PySAT's own
+   `time()` / `time_accum()` when available.
+
+2. **The tie rule threw away almost all training rows (R2).** Labels treated
+   any formula where the fastest two solvers were within 50 ms or a 1.2x margin
+   as a tie, and ties were excluded from training. On an easy corpus that was
+   nearly everything, so the classifier saw a handful of rows and collapsed to
+   the majority class. The solved-check also used the *minimum* run while the
+   label used the *median*, which is inconsistent. Both are fixed, and `build`
+   now reports tie rate, informative rate, usable training rows and the label
+   distribution, with explicit warnings.
+
+3. **The corpus was far too easy (R3).** The old `--small` corpus
+   (30/10/20/... formulas) and the default generator sizes produced instances
+   that every solver finished in under 0.1 s. There was no solver
+   differentiation to learn. `--small` is now a ~80-per-family pilot corpus
+   (40 OOD), and the old sizes live under `--tiny` for CI smoke tests only.
+
+4. **The classical models hid the collapse (R4).** SVM was trained on
+   unscaled features, there was no class balancing, no cross-validation, no
+   calibration, and model choice was made on a tiny validation set. Nothing
+   printed the predicted-class distribution, so "always MiniSat" was
+   invisible. Training now uses scaling, balanced cost-weighted loss, nested
+   CV with Platt calibration, and writes `artifacts/models/model_diagnostics.json`.
+
+`satsel diagnose` (and the web UI's Diagnostics view) prints the label
+distribution, the data-quality warnings, and the per-system choice histogram
+so a degenerate selector is obvious at a glance.
+
 ## 5. Tests
 
 ```
@@ -189,7 +428,9 @@ minor-proj/
 │   ├── models/            steps 5-6: classical + GNN
 │   ├── oracle/            step 7: the public API
 │   ├── eval/              step 8: metrics + stats + report
-│   └── cli.py             the `satsel` command
+│   ├── cli.py             the `satsel` command (also `python -m satsel.cli`)
+│   └── web_server.py      Flask API + static frontend
+├── frontend/              React UI (npm run build -> frontend/dist)
 ├── tests/
 └── artifacts/             all outputs; gitignored
 ```
@@ -205,6 +446,10 @@ One rule governs the code: a module may only import from `core` or earlier stage
 **`torch` / `torch_geometric` errors** when running `train-gnn`. You installed without the GNN extra. Run `uv sync --extra gnn`.
 
 **Profiling seems stuck at 0 done for minutes.** That is normal only for the hardest family. Easy families are processed first now, so if it is still at zero after a couple of minutes, check that you are on a recent version of the code and that the heartbeat is printing. If you see heartbeat lines but no completions, you are profiling genuinely hard formulas; Ctrl-C and re-run to resume later.
+
+**The selector picks the same solver for every formula.** Run `uv run satsel diagnose`. If `label_majority_share` is close to 1 or `tie_rate` is high, the corpus is too easy (see "Why the selector used to always pick MiniSat"). Re-run `bench` without `--tiny`, ideally the full corpus, then `profile`, `build`, `train`, `evaluate`.
+
+**`uv run satsel web` starts but the page is blank / says the frontend is not built.** Run `cd frontend && npm install && npm run build`, then reload.
 
 **The report says a comparison "not run".** The GNN comparison needs `train-gnn` to have run. The robustness appendix needs a solver hook that is only wired in nightly jobs.
 

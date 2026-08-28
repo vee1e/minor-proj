@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>satsel — Project Status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#F5F6F3; --panel:#ECEEE9; --sunk:#E3E6E0;
+  --ink:#14181C; --ink-2:#3D454C; --muted:#6E777D; --rule:#DADDD6;
+  --accent:#0F5E52; --accent-soft:#DCEBE6;
+  --bug:#B45309; --bug-soft:#F6E7D2; --bug-line:#E0A458;
+  --bad:#A4342A; --bad-soft:#F4DED9;
+  --good:#2F6B47; --good-soft:#DCEBE0;
+  --code:#E7EAE4;
+  --display:"Instrument Serif",Georgia,"Times New Roman",serif;
+  --ui:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#101315; --panel:#191D20; --sunk:#22272A;
+    --ink:#E9ECEC; --ink-2:#BAC2C5; --muted:#848D92; --rule:#282E32;
+    --accent:#4EC0AC; --accent-soft:#10312B;
+    --bug:#E0A458; --bug-soft:#33260F; --bug-line:#B4802F;
+    --bad:#E07A6E; --bad-soft:#331C19;
+    --good:#6DC08D; --good-soft:#16301F;
+    --code:#1B2023;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#101315; --panel:#191D20; --sunk:#22272A;
+  --ink:#E9ECEC; --ink-2:#BAC2C5; --muted:#848D92; --rule:#282E32;
+  --accent:#4EC0AC; --accent-soft:#10312B;
+  --bug:#E0A458; --bug-soft:#33260F; --bug-line:#B4802F;
+  --bad:#E07A6E; --bad-soft:#331C19;
+  --good:#6DC08D; --good-soft:#16301F;
+  --code:#1B2023;
+}
+*{box-sizing:border-box}
+html{font-size:17px;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--ui);
+     line-height:1.68;-webkit-font-smoothing:antialiased}
+
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+.col{max-width:660px;margin-left:auto;margin-right:auto}
+@media(max-width:700px){html{font-size:16px}.wrap{padding:0 16px}}
+
+.mast{border-bottom:1px solid var(--rule);padding:56px 0 34px;margin-bottom:8px}
+.eyebrow{font-family:var(--mono);font-size:.7rem;letter-spacing:.18em;text-transform:uppercase;
+         color:var(--accent);margin-bottom:16px}
+h1{font-family:var(--display);font-weight:400;font-size:clamp(2.4rem,6.5vw,4rem);line-height:1.04;
+   letter-spacing:-.015em;margin:0 0 20px;text-wrap:balance}
+h1 em{font-style:italic;color:var(--accent)}
+.standfirst{font-size:1.12rem;color:var(--ink-2);margin:0 0 8px;text-wrap:pretty}
+.byline{display:flex;flex-wrap:wrap;gap:16px;margin-top:22px;font-family:var(--mono);
+        font-size:.74rem;color:var(--muted)}
+.themebtn{background:var(--panel);color:var(--ink-2);border:1px solid var(--rule);border-radius:7px;
+          padding:5px 12px;font:inherit;font-size:.76rem;cursor:pointer;font-family:var(--mono)}
+.themebtn:hover{border-color:var(--accent);color:var(--accent)}
+.themebtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+nav.jump{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--paper) 92%,transparent);
+         backdrop-filter:blur(8px);border-bottom:1px solid var(--rule);margin-bottom:44px}
+nav.jump ol{display:flex;gap:0;list-style:none;margin:0;padding:0;overflow-x:auto;
+            max-width:1120px;margin:0 auto;padding:0 24px}
+nav.jump a{display:block;white-space:nowrap;padding:12px 16px 12px 0;color:var(--muted);
+           text-decoration:none;font-size:.8rem;font-family:var(--mono)}
+nav.jump a:hover,nav.jump a:focus-visible{color:var(--accent);outline:none}
+
+section{margin-bottom:64px}
+h2{font-family:var(--display);font-weight:400;font-size:clamp(1.8rem,3.8vw,2.5rem);line-height:1.1;
+   letter-spacing:-.01em;margin:0 0 6px;text-wrap:balance}
+.dek{color:var(--muted);font-size:.95rem;margin:0 0 22px}
+h3{font-size:1.06rem;font-weight:600;margin:32px 0 8px;letter-spacing:-.005em}
+p{margin:0 0 15px}
+ul,ol{padding-left:22px;margin:0 0 15px}
+li{margin-bottom:7px}
+strong{font-weight:600}
+code{font-family:var(--mono);font-size:.84em;background:var(--code);padding:1.5px 5px;border-radius:4px}
+.lead{font-size:1.06rem;color:var(--ink-2)}
+
+.bug{background:var(--panel);border:1px solid var(--rule);border-radius:14px;
+     padding:26px 28px;margin:0 0 26px}
+@media(max-width:700px){.bug{padding:20px 18px;border-radius:11px}}
+.bug .tag{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:.68rem;
+          letter-spacing:.12em;text-transform:uppercase;color:var(--accent);
+          background:var(--accent-soft);border-radius:99px;padding:3px 11px;margin-bottom:12px}
+.bug .tag.warn{color:var(--bug);background:var(--bug-soft)}
+.bug h3{margin:0 0 10px;font-family:var(--display);font-weight:400;font-size:1.5rem;
+        line-height:1.15;letter-spacing:-.01em}
+.bug p:last-child{margin-bottom:0}
+
+.call{border-left:3px solid var(--accent);background:var(--accent-soft);padding:14px 18px;
+      border-radius:0 9px 9px 0;margin:0 0 20px}
+.call.bad{border-left-color:var(--bad);background:var(--bad-soft)}
+.call.good{border-left-color:var(--good);background:var(--good-soft)}
+.call.warn{border-left-color:var(--bug);background:var(--bug-soft)}
+.call p:last-child{margin-bottom:0}
+.call .lbl{display:block;font-family:var(--mono);font-size:.66rem;letter-spacing:.13em;
+           text-transform:uppercase;margin-bottom:5px;color:var(--accent)}
+.call.bad .lbl{color:var(--bad)} .call.good .lbl{color:var(--good)} .call.warn .lbl{color:var(--bug)}
+
+.tw{overflow-x:auto;border:1px solid var(--rule);border-radius:11px;margin:0 0 20px}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font-family:var(--mono);font-size:.66rem;letter-spacing:.09em;text-transform:uppercase;
+   color:var(--muted);font-weight:500;background:var(--panel)}
+tr:last-child td{border-bottom:none}
+.chip{display:inline-block;font-family:var(--mono);font-size:.68rem;padding:2px 9px;
+      border-radius:5px;white-space:nowrap;font-weight:500}
+.chip.done{background:var(--good-soft);color:var(--good)}
+.chip.todo{background:var(--bad-soft);color:var(--bad)}
+.chip.part{background:var(--bug-soft);color:var(--bug)}
+.chip.open{background:var(--accent-soft);color:var(--accent)}
+
+pre.cmd{font-family:var(--mono);font-size:.79rem;background:var(--code);border:1px solid var(--rule);
+        border-radius:8px;padding:12px 14px;overflow-x:auto;margin:12px 0 0;line-height:1.6}
+
+.kicker-line{font-family:var(--display);font-size:clamp(1.4rem,3vw,1.9rem);line-height:1.3;
+             color:var(--ink);border-left:3px solid var(--accent);padding-left:22px;margin:40px 0;
+             text-wrap:balance}
+footer{border-top:1px solid var(--rule);padding:26px 0 60px;color:var(--muted);font-size:.84rem}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="mast col">
+    <div class="eyebrow">satsel · minor project · status, as of 2026-08-28</div>
+    <h1>Where things stand, and what <em>PR&nbsp;#4</em> actually does</h1>
+    <p class="standfirst">One document covering the whole arc: what was broken, what got fixed
+    across PRs&nbsp;#1–#3, what the consolidated PR&nbsp;#4 contains — including the review pass
+    <code>vee1e</code> did on top of it — and the one open question about the frontend that this
+    settles.</p>
+    <div class="byline">
+      <span>Written for the team</span><span>·</span>
+      <span>Covers #1–#4, current as of the latest push to each</span>
+    </div>
+    <p style="margin-top:18px"><button class="themebtn" id="themeBtn" type="button">◐ theme</button></p>
+  </header>
+</div>
+
+<nav class="jump" aria-label="Sections">
+  <ol>
+    <li><a href="#problem">The problem</a></li>
+    <li><a href="#fixes">The fixes (#1–#3)</a></li>
+    <li><a href="#pr4">PR #4</a></li>
+    <li><a href="#frontend">The frontend question</a></li>
+    <li><a href="#state">Current state</a></li>
+    <li><a href="#left">What's left</a></li>
+  </ol>
+</nav>
+
+<div class="wrap">
+
+<!-- ============ THE PROBLEM ============ -->
+<section id="problem" class="col">
+  <h2>The problem this started from</h2>
+  <p class="dek">Recap, for context on everything below</p>
+  <p class="lead">The selector always picked MiniSat. The teammate feedback was "sample size too
+  small" — that wasn't it. Four separate bugs stacked on top of each other, each invisible on its
+  own:</p>
+  <ol>
+    <li>The timer started before clause loading, not before <code>solve()</code> — so the
+    "runtime" measured was mostly per-solver setup overhead, and MiniSat has the least of it.</li>
+    <li>Labels were single-run rather than median-of-repeats, so noise could flip a winner.</li>
+    <li>The corpus wasn't sampled at the 4.26 clause/variable ratio where solvers actually
+    disagree — most formulas were trivial for everyone, giving no signal.</li>
+    <li>The GNN was a homogeneous bipartite graph that collapsed literal polarity
+    (<code>x</code> and <code>¬x</code> mapped to the same node), which throws away the one
+    thing a SAT formula's structure actually encodes.</li>
+  </ol>
+  <p>Full plain-English writeup with diagrams: <code>docs/what-went-wrong.html</code>. Everything
+  below is what closed the remaining gaps after that diagnosis.</p>
+</section>
+
+<!-- ============ FIXES #1-3 ============ -->
+<section id="fixes">
+  <div class="col">
+    <h2>The fixes — PRs #1, #2, #3</h2>
+    <p class="dek">All closed, superseded by #4 below — kept here for the record and the diffs</p>
+  </div>
+
+  <div class="col">
+  <div class="bug">
+    <span class="tag">#1 · fix/label-timing-and-dashboard-rewrite</span>
+    <h3>Timing, labels, corpus, model, GNN</h3>
+    <p>Fixed all four root-cause bugs above: <code>perf_counter</code> around <code>solve()</code>
+    only; median-of-3 labels with a tie band (20&nbsp;ms or 1.1×) and an <code>informative</code>
+    flag (1.5× gap) for training rows; random 3-SAT resampled at the phase transition; classical
+    models given scaling, class balance, cross-validated PAR-2 scoring, and calibration, plus a
+    regret-regression model that can't collapse to one class. The GNN was rewritten from a
+    homogeneous bipartite graph to the <strong>tripartite GraSS architecture</strong> — separate
+    var/lit/clause nodes across 4 relation types, literals keeping their polarity.</p>
+  </div>
+  </div>
+
+  <div class="col">
+  <div class="bug">
+    <span class="tag">#2 · feat/satlib-full-coverage</span>
+    <h3>Real benchmark data, not just generators</h3>
+    <p>The download host (<code>www.satlib.org</code>) has been a parked domain for years — every
+    prior build was 100% synthetic. Repointed to the canonical UBC mirror and fixed a DIMACS
+    parser bug that rejected every real SATLIB file (they end in a <code>%</code> terminator line
+    the parser didn't handle). Wired up all 15 archives — 2,210 real instances, weighted 5:1 by
+    difficulty via largest-remainder apportionment, SAT/UNSAT kept at exact parity. New
+    <code>satsel sources</code> command for cache/reachability status.</p>
+  </div>
+  </div>
+
+  <div class="col">
+  <div class="bug">
+    <span class="tag">#3 · feat/probe-inprocess-and-feature-free</span>
+    <h3>Feature-extraction budget, and objective O6</h3>
+    <p>The feature probe spawned a subprocess per formula — ~0.45&nbsp;s of interpreter startup,
+    which blew the 5% extraction budget on anything but the slowest formulas. Rewritten to run
+    in-process, stopped via the solver's own <code>interrupt()</code>: 156&nbsp;ms at the default
+    budget, inside budget at every setting from 20&nbsp;ms to 1&nbsp;s tested. Added search-space
+    features (conflicts/decisions/propagations/restarts) that only exist because the probe is now
+    in-process. Added the O6 feature-free ablation: <code>cnf_to_hetero</code> gains a
+    <code>node_feats</code> mode (<code>full</code> / <code>structural</code> / <code>none</code>),
+    <code>train-gnn</code> trains all modes on identical splits and reports the gap.</p>
+  </div>
+  </div>
+
+  <div class="call">
+    <span class="lbl">Why these are closed, not merged</span>
+    <p>All three were stacked (#2 on #1, #3 on #2). While waiting on review, <code>vee1e</code>
+    opened <a href="#pr4">#4</a>, which folds the same backend work into one PR without the
+    frontend rewrite that had bloated #1's diff with an 8k-line lockfile. #1–#3 were closed in
+    favour of it. Their branches and diffs are unchanged and still on GitHub if anything here
+    needs to be cross-checked against the original commit.</p>
+  </div>
+</section>
+
+<!-- ============ PR 4 ============ -->
+<section id="pr4">
+  <div class="col">
+    <h2>PR #4 — the consolidation</h2>
+    <p class="dek">Open, mergeable, base <code>main</code> ← <code>feat/consolidated-ml-pipeline</code></p>
+  </div>
+
+  <div class="col">
+    <p class="lead">Two commits. The first folds #1–#3's backend work into one diff against
+    <code>main</code>, deliberately excluding the frontend rewrite. The second is <code>vee1e</code>'s
+    own review pass over that consolidated diff — six real bugs and hardening items that weren't
+    caught in #1–#3, on top of everything above.</p>
+  </div>
+
+  <div class="col">
+  <div class="bug">
+    <span class="tag">Commit 2 · adversarial review findings</span>
+    <h3>Six fixes found reviewing the consolidated diff</h3>
+    <ul>
+      <li><strong>Crash-as-solved bug in labels.py</strong> — a solver that crashed twice and
+      solved once could still win the median-of-3 label. Crash/error runs now count as
+      not-finished.</li>
+      <li><strong>Seed was silently dropped</strong> — pysat rejects a <code>seed</code> kwarg on
+      every backend, so "independent repeats" were bit-identical runs. Now seeded via
+      <code>set_phases</code>, so repeats actually search differently.</li>
+      <li><strong>Probe wall clock still started after clause loading</strong> — the exact shape
+      of bug&nbsp;1 above, recurring in the new in-process probe from #3. Fixed by starting the
+      clock at <code>bootstrap_with</code>.</li>
+      <li><strong>Failed probe used to write fake zeros</strong> into training data instead of
+      marking the feature group missing — silently corrupting rows rather than dropping them.</li>
+      <li><strong>Download redirect handling</strong> — <code>requests</code>' automatic redirect
+      following could silently downgrade an <code>https→http</code> 302, defeating the https-only
+      check on the original URL. Redirects are now followed manually with a scheme check at each
+      hop.</li>
+      <li><strong>Allocator tie-break</strong> — leftover quota units from Hare-quota rounding used
+      to always favour whichever archive came first, which was quietly biased toward the SAT half.
+      Now goes to whichever tied archive least disturbs the SAT/UNSAT balance, verified across
+      want=1..399.</li>
+    </ul>
+    <p>Also: <code>web_server.py</code> got <code>MAX_CONTENT_LENGTH</code> so oversized request
+    bodies are rejected before Flask buffers them, and <code>/api/solve</code>'s timeout parameter
+    now rejects negative/NaN values. Config drift was cleaned up (<code>tie_margin</code> aligned
+    to 1.1, <code>structural</code> added to the ablation list since the docs already promised it,
+    two dead config keys removed).</p>
+  </div>
+  </div>
+
+  <div class="call good">
+    <span class="lbl">Net assessment</span>
+    <p>This is a real, independent review pass, not a rubber stamp — the seed bug and the
+    probe-timing recurrence in particular are exactly the class of bug that's easy to reintroduce
+    when consolidating three branches by hand. Verified: <code>ruff</code> clean,
+    <strong>64 passed / 1 skipped</strong> (the skip is <code>test_gnn.py</code>'s 21 cases,
+    skipped because the <code>gnn</code> extra — torch/torch-geometric — isn't installed in that
+    environment; 64 + skipped-but-collectible ≈ the 85 known from #3). GitHub reports the PR as
+    <strong>mergeable</strong> against current <code>main</code>.</p>
+  </div>
+</section>
+
+<!-- ============ FRONTEND ============ -->
+<section id="frontend">
+  <div class="col">
+    <h2>The frontend question, settled</h2>
+    <p class="dek">What "frontend is out" in the PR description actually means</p>
+  </div>
+  <div class="col">
+    <p class="lead">PR #4's description says <em>"Frontend is out… This PR has 0 files under
+    frontend."</em> That's true of the <strong>diff</strong> — the PR never touches anything under
+    <code>frontend/</code>. It does <strong>not</strong> mean the directory is deleted. It's
+    inherited unchanged from <code>main</code>, which has had a basic frontend since commit
+    <code>0cd3368</code>.</p>
+    <div class="tw">
+      <table>
+        <tr><th>Location</th><th>Has <code>frontend/</code>?</th><th>Has <code>web_server.py</code>?</th></tr>
+        <tr><td><code>main</code></td><td>Yes — original basic version, incl. <code>bun.lock</code></td><td>Yes</td></tr>
+        <tr><td>PR #4 tip</td><td>Yes — identical tree, untouched</td><td>Yes — <strong>actively edited</strong></td></tr>
+      </table>
+    </div>
+    <div class="call good">
+      <span class="lbl">What actually settles it</span>
+      <p>PR #4's second commit doesn't just leave <code>web_server.py</code> alone — it
+      <strong>rewrites 513 lines of it</strong>: request-size limits, input validation on
+      <code>/api/solve</code>, an argument allowlist for the subprocess calls that launch pipeline
+      steps, config-driven CORS. That's hardening work on a server that exists specifically to
+      serve <code>frontend/dist</code>. Nobody is planning to delete the frontend — it's being
+      kept and made safer to expose.</p>
+    </div>
+    <p>Net: the earlier plan to strip <code>frontend/</code> and <code>web_server.py</code> down to
+    a CLI-only repo is superseded. <strong>Nothing further needs to be pushed</strong> — the three
+    branches that did that removal (still sitting on #1–#3, since those PRs are closed) can stay
+    as-is and don't need to land anywhere. If the lockfile-size complaint that started that thread
+    comes up again, the actual fix already happened: #4 never re-adds the duplicate
+    <code>package-lock.json</code> that caused it, and the original <code>bun.lock</code> is the
+    only lockfile in the tree.</p>
+  </div>
+</section>
+
+<!-- ============ CURRENT STATE ============ -->
+<section id="state">
+  <div class="col">
+    <h2>Current state</h2>
+    <p class="dek">Branches, PRs, what's live</p>
+  </div>
+  <div class="col">
+    <div class="tw">
+      <table>
+        <tr><th>PR</th><th>Branch</th><th>State</th><th>Contains</th></tr>
+        <tr><td>#1</td><td><code>fix/label-timing-and-dashboard-rewrite</code></td>
+            <td><span class="chip todo">closed</span></td>
+            <td>Timing/label/corpus/model/GNN fixes + full frontend rewrite (superseded)</td></tr>
+        <tr><td>#2</td><td><code>feat/satlib-full-coverage</code></td>
+            <td><span class="chip todo">closed</span></td>
+            <td>Real SATLIB downloads, 15 archives (superseded)</td></tr>
+        <tr><td>#3</td><td><code>feat/probe-inprocess-and-feature-free</code></td>
+            <td><span class="chip todo">closed</span></td>
+            <td>In-process probe, O6 ablation (superseded)</td></tr>
+        <tr><td>#4</td><td><code>feat/consolidated-ml-pipeline</code></td>
+            <td><span class="chip open">open, mergeable</span></td>
+            <td>All backend work from #1–#3 + a 6-item review pass, no frontend diff</td></tr>
+      </table>
+    </div>
+    <p><code>main</code> is unchanged since <code>3f70f6d</code> ("updated .gitignore") — #4 is
+    the only thing waiting to land on it.</p>
+  </div>
+</section>
+
+<!-- ============ WHAT'S LEFT ============ -->
+<section id="left">
+  <div class="col">
+    <h2>What's left</h2>
+    <p class="dek">Everything else is either done or is a run you need to make</p>
+  </div>
+  <div class="col">
+    <ul>
+      <li><strong>Merge #4.</strong> It's mergeable against current <code>main</code> and closes
+      #1–#3 automatically.</li>
+      <li><strong>SATfeatPy wording</strong> — not on PyPI, GitHub-only research code. The
+      extractor already computes 70 features across the same categories. Reword the synopsis to
+      "a SATfeatPy-derived feature set, reimplemented" rather than vendoring unmaintained research
+      code days before a deadline. Wording only, no code.</li>
+      <li><strong>The lab run</strong> — full profiling + training on real hardware. Everything
+      upstream of it (data, labels, features, both model families) is now fixed; this is the
+      actual bottleneck, and it's a CPU job (branch-heavy CDCL search doesn't parallelize on a
+      GPU) — see <code>docs/lab-runbook.html</code> for the exact steps.</li>
+    </ul>
+  </div>
+
+  <div class="col kicker-line">
+    Four root-cause bugs, plus six more found on review, all closed before a single lab hour was
+    spent. What's left is running the experiment the pipeline was always supposed to run.
+  </div>
+</section>
+
+<footer class="col">
+  <p>Companion documents: <code>docs/what-went-wrong.html</code> (plain-English root-cause
+  diagnosis) and <code>docs/lab-runbook.html</code> (exact commands for the lab run). Code
+  referenced above: PRs #1–#4 on <a href="https://github.com/vee1e/minor-proj">vee1e/minor-proj</a>.</p>
+</footer>
+</div>
+
+<script>
+(function(){
+  var btn=document.getElementById('themeBtn'),stored=null;
+  try{stored=localStorage.getItem('satsel-theme');}catch(e){}
+  if(stored){document.documentElement.setAttribute('data-theme',stored);}
+  btn.addEventListener('click',function(){
+    var cur=document.documentElement.getAttribute('data-theme');
+    if(!cur){cur=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';}
+    var next=cur==='dark'?'light':'dark';
+    document.documentElement.setAttribute('data-theme',next);
+    try{localStorage.setItem('satsel-theme',next);}catch(e){}
+  });
+})();
+</script>
+</body>
+</html>
